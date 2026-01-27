@@ -1,0 +1,89 @@
+{
+  "name": "semgrep-offline",
+  "displayName": "Semgrep Offline",
+  "description": "Offline semgrep linter using local rules only",
+  "version": "1.0.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "semgrep-offline.scanFile",
+        "title": "Semgrep: Scan Current File"
+      },
+      {
+        "command": "semgrep-offline.scanWorkspace",
+        "title": "Semgrep: Scan Workspace"
+      },
+      {
+        "command": "semgrep-offline.clearDiagnostics",
+        "title": "Semgrep: Clear All Diagnostics"
+      }
+    ],
+    "configuration": {
+      "title": "Semgrep Offline",
+      "properties": {
+        "semgrepOffline.rulesPath": {
+          "type": "string",
+          "default": "semgrep_rules.yaml",
+          "description": "Path to semgrep rules file (relative to workspace or absolute)"
+        },
+        "semgrepOffline.semgrepPath": {
+          "type": "string",
+          "default": "semgrep",
+          "description": "Path to semgrep executable"
+        },
+        "semgrepOffline.scanOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan files on save"
+        },
+        "semgrepOffline.scanOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically scan files when opened"
+        },
+        "semgrepOffline.scanOnChange": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically scan files when content changes (debounced)"
+        },
+        "semgrepOffline.scanOnChangeDelay": {
+          "type": "number",
+          "default": 1500,
+          "description": "Delay in milliseconds before scanning after content changes"
+        },
+        "semgrepOffline.useCache": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip scanning unchanged files (based on content hash)"
+        },
+        "semgrepOffline.languages": {
+          "type": "array",
+          "default": ["python"],
+          "description": "Languages to scan"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0"
+  }
+}
