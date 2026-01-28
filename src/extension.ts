@@ -3,6 +3,29 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import * as crypto from 'crypto';
 
+interface ClassInfo {
+    name: string;
+    startLine: number;
+    endLine: number;
+    methods: MethodInfo[];
+    instanceVariables: Set<string>;
+}
+
+interface MethodInfo {
+    name: string;
+    startLine: number;
+    endLine: number;
+    usedVariables: Set<string>;
+    calledMethods: Set<string>;
+}
+
+interface LCOM4Result {
+    className: string;
+    lcom4Value: number;
+    connectedComponents: string[][];
+    suggestion: string;
+}
+
 interface SemgrepResult {
     results: SemgrepFinding[];
     errors: SemgrepError[];
@@ -68,6 +91,10 @@ export function activate(context: vscode.ExtensionContext) {
         const editor = vscode.window.activeTextEditor;
         if (editor) {
             scanFile(editor.document, true);
+            const config = vscode.workspace.getConfiguration('semgrepOffline');
+            if (config.get<boolean>('enableSRP')) {
+                checkSingleResponsibility(editor.document, true);
+            }
         }
     });
 
@@ -81,45 +108,62 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine('Cleared all diagnostics and cache');
     });
 
-    context.subscriptions.push(scanFileCommand, scanWorkspaceCommand, clearCommand);
+    const srpCheckCommand = vscode.commands.registerCommand('semgrep-offline.checkSRP', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            checkSingleResponsibility(editor.document);
+        }
+    });
 
-    const config = vscode.workspace.getConfiguration('semgrepOffline');
-    const supportedLanguages = config.get<string[]>('languages') || ['python'];
+    context.subscriptions.push(scanFileCommand, scanWorkspaceCommand, clearCommand, srpCheckCommand);
 
-    if (config.get<boolean>('scanOnSave')) {
-        context.subscriptions.push(
-            vscode.workspace.onDidSaveTextDocument((document) => {
-                if (shouldScanDocument(document, supportedLanguages)) {
-                    scanFile(document, true);
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument((document) => {
+            const config = vscode.workspace.getConfiguration('semgrepOffline');
+            const supportedLanguages = config.get<string[]>('languages') || ['python'];
+            if (config.get<boolean>('scanOnSave') && shouldScanDocument(document, supportedLanguages)) {
+                scanFile(document, true);
+                if (config.get<boolean>('enableSRP')) {
+                    checkSingleResponsibility(document, true);
                 }
-            })
-        );
-    }
+            }
+        })
+    );
 
-    if (config.get<boolean>('scanOnOpen')) {
-        context.subscriptions.push(
-            vscode.workspace.onDidOpenTextDocument((document) => {
-                if (shouldScanDocument(document, supportedLanguages)) {
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument((document) => {
+            const config = vscode.workspace.getConfiguration('semgrepOffline');
+            const supportedLanguages = config.get<string[]>('languages') || ['python'];
+            if (config.get<boolean>('scanOnOpen') && shouldScanDocument(document, supportedLanguages)) {
+                scanFile(document, false);
+                if (config.get<boolean>('enableSRP')) {
+                    checkSingleResponsibility(document, true);
+                }
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument((event) => {
+            const config = vscode.workspace.getConfiguration('semgrepOffline');
+            const supportedLanguages = config.get<string[]>('languages') || ['python'];
+            const document = event.document;
+            if (config.get<boolean>('scanOnChange') && shouldScanDocument(document, supportedLanguages) && event.contentChanges.length > 0) {
+                const debounceDelay = config.get<number>('scanOnChangeDelay') || 1500;
+                debounce(document.uri.toString(), () => {
                     scanFile(document, false);
-                }
-            })
-        );
-    }
-
-    if (config.get<boolean>('scanOnChange')) {
-        const debounceDelay = config.get<number>('scanOnChangeDelay') || 1500;
-        context.subscriptions.push(
-            vscode.workspace.onDidChangeTextDocument((event) => {
-                const document = event.document;
-                if (shouldScanDocument(document, supportedLanguages) && event.contentChanges.length > 0) {
-                    debounce(document.uri.toString(), () => scanFile(document, false), debounceDelay);
-                }
-            })
-        );
-    }
+                    if (config.get<boolean>('enableSRP')) {
+                        checkSingleResponsibility(document, true);
+                    }
+                }, debounceDelay);
+            }
+        })
+    );
 
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor((editor) => {
+            const config = vscode.workspace.getConfiguration('semgrepOffline');
+            const supportedLanguages = config.get<string[]>('languages') || ['python'];
             if (editor && shouldScanDocument(editor.document, supportedLanguages)) {
                 statusBarItem.show();
             } else {
@@ -128,12 +172,17 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    const initialConfig = vscode.workspace.getConfiguration('semgrepOffline');
+    const initialLanguages = initialConfig.get<string[]>('languages') || ['python'];
     if (vscode.window.activeTextEditor) {
         const doc = vscode.window.activeTextEditor.document;
-        if (shouldScanDocument(doc, supportedLanguages)) {
+        if (shouldScanDocument(doc, initialLanguages)) {
             statusBarItem.show();
-            if (config.get<boolean>('scanOnOpen')) {
+            if (initialConfig.get<boolean>('scanOnOpen')) {
                 scanFile(doc, false);
+                if (initialConfig.get<boolean>('enableSRP')) {
+                    checkSingleResponsibility(doc, true);
+                }
             }
         }
     }
@@ -190,18 +239,20 @@ async function scanFile(document: vscode.TextDocument, force: boolean): Promise<
     
     try {
         const results = await runSemgrep(semgrepPath, rulesPath, filePath);
-        const diagnostics = parseSemgrepResults(results, filePath);
-        diagnosticCollection.set(document.uri, diagnostics);
+        const semgrepDiagnostics = parseSemgrepResults(results, filePath);
+        const existingDiagnostics = diagnosticCollection.get(document.uri) || [];
+        const srpDiagnostics = existingDiagnostics.filter(d => d.source === 'solid-srp');
+        diagnosticCollection.set(document.uri, [...semgrepDiagnostics, ...srpDiagnostics]);
         
         if (useCache) {
             fileHashCache.set(filePath, getFileHash(document.getText()));
         }
         
-        statusBarItem.text = diagnostics.length > 0 
-            ? `$(shield) Semgrep (${diagnostics.length})` 
+        statusBarItem.text = semgrepDiagnostics.length > 0 
+            ? `$(shield) Semgrep (${semgrepDiagnostics.length})` 
             : '$(shield) Semgrep ✓';
         
-        outputChannel.appendLine(`Found ${diagnostics.length} issue(s) in ${path.basename(filePath)}`);
+        outputChannel.appendLine(`Found ${semgrepDiagnostics.length} issue(s) in ${path.basename(filePath)}`);
     } catch (error) {
         statusBarItem.text = '$(shield) Semgrep ⚠';
         outputChannel.appendLine(`Error scanning ${filePath}: ${error}`);
@@ -371,6 +422,385 @@ function mapSeverity(severity: string): vscode.DiagnosticSeverity {
         default:
             return vscode.DiagnosticSeverity.Warning;
     }
+}
+
+async function checkSingleResponsibility(document: vscode.TextDocument, silent: boolean = false): Promise<void> {
+    const config = vscode.workspace.getConfiguration('semgrepOffline');
+    const threshold = config.get<number>('srpLcom4Threshold') || 1;
+    
+    const text = document.getText();
+    const classes = parseClasses(text, document.languageId);
+    
+    if (classes.length === 0) {
+        if (!silent) {
+            vscode.window.showInformationMessage('No classes found in the current file.');
+        }
+        return;
+    }
+    
+    const results: LCOM4Result[] = [];
+    const diagnostics: vscode.Diagnostic[] = [];
+    
+    for (const classInfo of classes) {
+        const lcom4Result = calculateLCOM4(classInfo);
+        results.push(lcom4Result);
+        
+        if (lcom4Result.lcom4Value > threshold) {
+            const range = new vscode.Range(
+                classInfo.startLine, 0,
+                classInfo.startLine, 100
+            );
+            
+            const prompt = generateSRPPrompt([lcom4Result], document.uri.fsPath);
+            
+            const diagnostic = new vscode.Diagnostic(
+                range,
+                `SRP Violation: Class '${classInfo.name}' has LCOM4=${lcom4Result.lcom4Value}. ${lcom4Result.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
+                vscode.DiagnosticSeverity.Warning
+            );
+            diagnostic.source = 'solid-srp';
+            diagnostic.code = 'LCOM4';
+            diagnostics.push(diagnostic);
+        }
+    }
+    
+    const existingDiagnostics = diagnosticCollection.get(document.uri) || [];
+    const nonSrpDiagnostics = existingDiagnostics.filter(d => d.source !== 'solid-srp');
+    diagnosticCollection.set(document.uri, [...nonSrpDiagnostics, ...diagnostics]);
+    
+    const violatingClasses = results.filter(r => r.lcom4Value > threshold);
+    
+    if (!silent) {
+        if (violatingClasses.length > 0) {
+            const prompt = generateSRPPrompt(violatingClasses, document.uri.fsPath);
+            outputChannel.appendLine('\n=== SRP Analysis Result ===');
+            outputChannel.appendLine(prompt);
+            outputChannel.show();
+            
+            const action = await vscode.window.showWarningMessage(
+                `Found ${violatingClasses.length} class(es) potentially violating Single Responsibility Principle.`,
+                'View Details',
+                'Copy Prompt'
+            );
+            
+            if (action === 'Copy Prompt') {
+                await vscode.env.clipboard.writeText(prompt);
+                vscode.window.showInformationMessage('SRP analysis prompt copied to clipboard.');
+            } else if (action === 'View Details') {
+                outputChannel.show();
+            }
+        } else {
+            vscode.window.showInformationMessage('All classes pass the Single Responsibility Principle check.');
+        }
+    } else if (violatingClasses.length > 0) {
+        outputChannel.appendLine(`SRP: Found ${violatingClasses.length} violation(s) in ${path.basename(document.uri.fsPath)}`);
+    }
+}
+
+function parseClasses(text: string, languageId: string): ClassInfo[] {
+    const classes: ClassInfo[] = [];
+    const lines = text.split('\n');
+    
+    if (languageId === 'python') {
+        return parsePythonClasses(lines);
+    } else if (languageId === 'typescript' || languageId === 'javascript' || languageId === 'typescriptreact' || languageId === 'javascriptreact') {
+        return parseTypeScriptClasses(lines);
+    }
+    
+    return classes;
+}
+
+function parsePythonClasses(lines: string[]): ClassInfo[] {
+    const classes: ClassInfo[] = [];
+    let currentClass: ClassInfo | null = null;
+    let currentMethod: MethodInfo | null = null;
+    let classIndent = 0;
+    let methodIndent = 0;
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trimStart();
+        const indent = line.length - trimmed.length;
+        
+        const classMatch = trimmed.match(/^class\s+(\w+)/);
+        if (classMatch) {
+            if (currentClass) {
+                if (currentMethod) {
+                    currentClass.methods.push(currentMethod);
+                }
+                currentClass.endLine = i - 1;
+                classes.push(currentClass);
+            }
+            currentClass = {
+                name: classMatch[1],
+                startLine: i,
+                endLine: i,
+                methods: [],
+                instanceVariables: new Set()
+            };
+            currentMethod = null;
+            classIndent = indent;
+            continue;
+        }
+        
+        if (currentClass && indent <= classIndent && trimmed.length > 0 && !classMatch) {
+            if (currentMethod) {
+                currentClass.methods.push(currentMethod);
+            }
+            currentClass.endLine = i - 1;
+            classes.push(currentClass);
+            currentClass = null;
+            currentMethod = null;
+            continue;
+        }
+        
+        if (currentClass) {
+            const methodMatch = trimmed.match(/^def\s+(\w+)\s*\(/);
+            if (methodMatch) {
+                if (currentMethod) {
+                    currentClass.methods.push(currentMethod);
+                }
+                currentMethod = {
+                    name: methodMatch[1],
+                    startLine: i,
+                    endLine: i,
+                    usedVariables: new Set(),
+                    calledMethods: new Set()
+                };
+                methodIndent = indent;
+                continue;
+            }
+            
+            if (currentMethod && indent > methodIndent) {
+                currentMethod.endLine = i;
+                
+                const selfVarMatches = line.matchAll(/self\.(\w+)/g);
+                for (const match of selfVarMatches) {
+                    const varName = match[1];
+                    if (!varName.startsWith('_') || !varName.endsWith('_')) {
+                        if (line.includes(`self.${varName}(`) || line.includes(`self.${varName} (`)) {
+                            currentMethod.calledMethods.add(varName);
+                        } else {
+                            currentMethod.usedVariables.add(varName);
+                            currentClass.instanceVariables.add(varName);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    if (currentClass) {
+        if (currentMethod) {
+            currentClass.methods.push(currentMethod);
+        }
+        currentClass.endLine = lines.length - 1;
+        classes.push(currentClass);
+    }
+    
+    return classes;
+}
+
+function parseTypeScriptClasses(lines: string[]): ClassInfo[] {
+    const classes: ClassInfo[] = [];
+    let currentClass: ClassInfo | null = null;
+    let currentMethod: MethodInfo | null = null;
+    let braceCount = 0;
+    let classStartBrace = 0;
+    let methodStartBrace = 0;
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        
+        const classMatch = trimmed.match(/^(?:export\s+)?class\s+(\w+)/);
+        if (classMatch && braceCount === 0) {
+            currentClass = {
+                name: classMatch[1],
+                startLine: i,
+                endLine: i,
+                methods: [],
+                instanceVariables: new Set()
+            };
+            classStartBrace = braceCount;
+        }
+        
+        const openBraces = (line.match(/{/g) || []).length;
+        const closeBraces = (line.match(/}/g) || []).length;
+        braceCount += openBraces - closeBraces;
+        
+        if (currentClass) {
+            const methodMatch = trimmed.match(/^(?:public\s+|private\s+|protected\s+)?(?:async\s+)?(\w+)\s*\(/);
+            if (methodMatch && !trimmed.startsWith('constructor') && braceCount === classStartBrace + 1) {
+                if (currentMethod) {
+                    currentClass.methods.push(currentMethod);
+                }
+                currentMethod = {
+                    name: methodMatch[1],
+                    startLine: i,
+                    endLine: i,
+                    usedVariables: new Set(),
+                    calledMethods: new Set()
+                };
+                methodStartBrace = braceCount;
+            }
+            
+            if (currentMethod && braceCount > methodStartBrace) {
+                currentMethod.endLine = i;
+                
+                const thisVarMatches = line.matchAll(/this\.(\w+)/g);
+                for (const match of thisVarMatches) {
+                    const varName = match[1];
+                    if (line.includes(`this.${varName}(`) || line.includes(`this.${varName} (`)) {
+                        currentMethod.calledMethods.add(varName);
+                    } else {
+                        currentMethod.usedVariables.add(varName);
+                        currentClass.instanceVariables.add(varName);
+                    }
+                }
+            }
+            
+            if (currentMethod && braceCount <= methodStartBrace && closeBraces > 0) {
+                currentClass.methods.push(currentMethod);
+                currentMethod = null;
+            }
+            
+            if (braceCount === 0 && currentClass) {
+                currentClass.endLine = i;
+                classes.push(currentClass);
+                currentClass = null;
+            }
+        }
+    }
+    
+    return classes;
+}
+
+function calculateLCOM4(classInfo: ClassInfo): LCOM4Result {
+    const methods = classInfo.methods.filter(m => !m.name.startsWith('__') || m.name === '__init__');
+    
+    if (methods.length <= 1) {
+        return {
+            className: classInfo.name,
+            lcom4Value: 1,
+            connectedComponents: [methods.map(m => m.name)],
+            suggestion: 'Class has 0 or 1 method, LCOM4 is trivially 1.'
+        };
+    }
+    
+    const adjacency = new Map<string, Set<string>>();
+    for (const method of methods) {
+        adjacency.set(method.name, new Set());
+    }
+    
+    for (let i = 0; i < methods.length; i++) {
+        for (let j = i + 1; j < methods.length; j++) {
+            const m1 = methods[i];
+            const m2 = methods[j];
+            
+            const sharedVars = [...m1.usedVariables].filter(v => m2.usedVariables.has(v));
+            const m1CallsM2 = m1.calledMethods.has(m2.name);
+            const m2CallsM1 = m2.calledMethods.has(m1.name);
+            
+            if (sharedVars.length > 0 || m1CallsM2 || m2CallsM1) {
+                adjacency.get(m1.name)!.add(m2.name);
+                adjacency.get(m2.name)!.add(m1.name);
+            }
+        }
+    }
+    
+    const visited = new Set<string>();
+    const components: string[][] = [];
+    
+    for (const method of methods) {
+        if (!visited.has(method.name)) {
+            const component: string[] = [];
+            const stack = [method.name];
+            
+            while (stack.length > 0) {
+                const current = stack.pop()!;
+                if (!visited.has(current)) {
+                    visited.add(current);
+                    component.push(current);
+                    
+                    for (const neighbor of adjacency.get(current) || []) {
+                        if (!visited.has(neighbor)) {
+                            stack.push(neighbor);
+                        }
+                    }
+                }
+            }
+            
+            components.push(component);
+        }
+    }
+    
+    const suggestion = generateLCOM4Suggestion(classInfo.name, components);
+    
+    return {
+        className: classInfo.name,
+        lcom4Value: components.length,
+        connectedComponents: components,
+        suggestion
+    };
+}
+
+function generateLCOM4Suggestion(className: string, components: string[][]): string {
+    if (components.length <= 1) {
+        return 'Class appears to be cohesive.';
+    }
+    
+    const componentDescriptions = components.map((comp, idx) => 
+        `Group ${idx + 1}: ${comp.join(', ')}`
+    ).join('; ');
+    
+    return `Consider splitting into ${components.length} classes. Method groups: ${componentDescriptions}`;
+}
+
+function generateSRPPrompt(violations: LCOM4Result[], filePath: string): string {
+    const fileName = path.basename(filePath);
+    
+    let prompt = `# Single Responsibility Principle Violation Analysis\n\n`;
+    prompt += `**File:** ${fileName}\n\n`;
+    prompt += `The following class(es) may violate the Single Responsibility Principle based on LCOM4 analysis:\n\n`;
+    
+    for (const violation of violations) {
+        prompt += `## Class: ${violation.className}\n`;
+        prompt += `- **LCOM4 Score:** ${violation.lcom4Value} (ideal is 1)\n`;
+        prompt += `- **Connected Components:** ${violation.lcom4Value}\n\n`;
+        prompt += `### Method Groups (disconnected responsibilities):\n`;
+        
+        for (let i = 0; i < violation.connectedComponents.length; i++) {
+            const component = violation.connectedComponents[i];
+            prompt += `${i + 1}. **Responsibility ${i + 1}:** ${component.join(', ')}\n`;
+        }
+        
+        prompt += `\n### Recommended Refactoring:\n`;
+        prompt += `This class has ${violation.lcom4Value} disconnected groups of methods that don't share state or call each other. `;
+        prompt += `Consider extracting each group into its own class:\n\n`;
+        
+        for (let i = 0; i < violation.connectedComponents.length; i++) {
+            const component = violation.connectedComponents[i];
+            const suggestedName = `${violation.className}${getSuggestedSuffix(i, violation.connectedComponents.length)}`;
+            prompt += `- Create \`${suggestedName}\` with methods: ${component.join(', ')}\n`;
+        }
+        
+        prompt += `\n`;
+    }
+    
+    prompt += `---\n`;
+    prompt += `**Action Required:** Please refactor the above class(es) to follow the Single Responsibility Principle. `;
+    prompt += `Each new class should have one clear responsibility and all its methods should be cohesive (working on the same data/state).\n`;
+    
+    return prompt;
+}
+
+function getSuggestedSuffix(index: number, total: number): string {
+    if (total === 2) {
+        return index === 0 ? 'Core' : 'Helper';
+    }
+    const suffixes = ['Core', 'Manager', 'Handler', 'Service', 'Processor', 'Builder', 'Factory', 'Provider'];
+    return suffixes[index % suffixes.length];
 }
 
 export function deactivate() {
