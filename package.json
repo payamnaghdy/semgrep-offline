@@ -1,9 +1,14 @@
 {
   "name": "semgrep-offline",
   "displayName": "Semgrep Offline",
-  "description": "Offline semgrep linter using local rules only",
-  "version": "1.1.0",
-  "publisher": "local",
+  "description": "Offline semgrep linter with SOLID principle checks (SRP via LCOM4, OCP via TCD+TFSC, DIP via DII)",
+  "version": "1.2.0",
+  "publisher": "payamnaghdi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/payamnaghdy/semgrep-offline"
+  },
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -31,63 +36,124 @@
       {
         "command": "semgrep-offline.checkSRP",
         "title": "SOLID: Check Single Responsibility Principle (LCOM4)"
+      },
+      {
+        "command": "semgrep-offline.checkOCP",
+        "title": "SOLID: Check Open/Closed Principle (TCD+TFSC)"
+      },
+      {
+        "command": "semgrep-offline.checkDIP",
+        "title": "SOLID: Check Dependency Inversion Principle (DII)"
       }
     ],
-    "configuration": {
-      "title": "Semgrep Offline",
-      "properties": {
-        "semgrepOffline.rulesPath": {
-          "type": "string",
-          "default": "semgrep_rules.yaml",
-          "description": "Path to semgrep rules file (relative to workspace or absolute)"
-        },
-        "semgrepOffline.semgrepPath": {
-          "type": "string",
-          "default": "semgrep",
-          "description": "Path to semgrep executable"
-        },
-        "semgrepOffline.scanOnSave": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically scan files on save"
-        },
-        "semgrepOffline.scanOnOpen": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically scan files when opened"
-        },
-        "semgrepOffline.scanOnChange": {
-          "type": "boolean",
-          "default": false,
-          "description": "Automatically scan files when content changes (debounced)"
-        },
-        "semgrepOffline.scanOnChangeDelay": {
-          "type": "number",
-          "default": 1500,
-          "description": "Delay in milliseconds before scanning after content changes"
-        },
-        "semgrepOffline.useCache": {
-          "type": "boolean",
-          "default": true,
-          "description": "Skip scanning unchanged files (based on content hash)"
-        },
-        "semgrepOffline.languages": {
-          "type": "array",
-          "default": ["python"],
-          "description": "Languages to scan"
-        },
-        "semgrepOffline.srpLcom4Threshold": {
-          "type": "number",
-          "default": 1,
-          "description": "LCOM4 threshold for Single Responsibility Principle violation. Classes with LCOM4 > threshold are flagged. (1 = ideal cohesion)"
-        },
-        "semgrepOffline.enableSRP": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable Single Responsibility Principle check (LCOM4) during automatic scans"
+    "configuration": [
+      {
+        "title": "Semgrep",
+        "properties": {
+          "semgrepOffline.rulesPath": {
+            "type": "string",
+            "default": "semgrep_rules.yaml",
+            "description": "Path to semgrep rules file (relative to workspace or absolute)",
+            "order": 1
+          },
+          "semgrepOffline.semgrepPath": {
+            "type": "string",
+            "default": "semgrep",
+            "description": "Path to semgrep executable",
+            "order": 2
+          },
+          "semgrepOffline.languages": {
+            "type": "array",
+            "default": [
+              "python"
+            ],
+            "description": "Languages to scan",
+            "order": 3
+          },
+          "semgrepOffline.scanOnSave": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically scan files on save",
+            "order": 4
+          },
+          "semgrepOffline.scanOnOpen": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically scan files when opened",
+            "order": 5
+          },
+          "semgrepOffline.scanOnChange": {
+            "type": "boolean",
+            "default": false,
+            "description": "Automatically scan files when content changes (debounced)",
+            "order": 6
+          },
+          "semgrepOffline.scanOnChangeDelay": {
+            "type": "number",
+            "default": 1500,
+            "description": "Delay in milliseconds before scanning after content changes",
+            "order": 7
+          },
+          "semgrepOffline.useCache": {
+            "type": "boolean",
+            "default": true,
+            "description": "Skip scanning unchanged files (based on content hash)",
+            "order": 8
+          }
+        }
+      },
+      {
+        "title": "SOLID: Single Responsibility (SRP)",
+        "properties": {
+          "semgrepOffline.enableSRP": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable SRP check during automatic scans",
+            "order": 1
+          },
+          "semgrepOffline.srpLcom4Threshold": {
+            "type": "number",
+            "default": 1,
+            "description": "LCOM4 threshold. Classes with LCOM4 > threshold are flagged. (1 = ideal cohesion, higher = more tolerant)",
+            "order": 2
+          }
+        }
+      },
+      {
+        "title": "SOLID: Open/Closed (OCP)",
+        "properties": {
+          "semgrepOffline.enableOCP": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable OCP check during automatic scans",
+            "order": 1
+          },
+          "semgrepOffline.ocpScoreThreshold": {
+            "type": "number",
+            "default": 4,
+            "description": "OCP score threshold. Methods with score > threshold are flagged. Weights: instanceof=2, type()==2, typeof=1, .type==1.5",
+            "order": 2
+          }
+        }
+      },
+      {
+        "title": "SOLID: Dependency Inversion (DIP)",
+        "properties": {
+          "semgrepOffline.enableDIP": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable DIP check during automatic scans",
+            "order": 1
+          },
+          "semgrepOffline.dipScoreThreshold": {
+            "type": "number",
+            "default": 3,
+            "description": "DIP score threshold. Classes with score >= threshold are flagged. Weights: constructor=2, method=1.5",
+            "order": 2
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -98,6 +164,7 @@
   "devDependencies": {
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.74.0",
+    "@vscode/vsce": "^3.7.1",
     "typescript": "^5.0.0"
   }
 }

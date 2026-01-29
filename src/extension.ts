@@ -26,6 +26,43 @@ interface LCOM4Result {
     suggestion: string;
 }
 
+interface OCPViolation {
+    line: number;
+    type: 'instanceof' | 'type_equality' | 'type_field' | 'typeof';
+    code: string;
+}
+
+interface OCPResult {
+    className: string;
+    methodName: string;
+    startLine: number;
+    tcd: number;
+    tfsc: number;
+    ocpScore: number;
+    violations: OCPViolation[];
+    suggestion: string;
+}
+
+interface DIPViolation {
+    line: number;
+    type: 'constructor_instantiation' | 'method_instantiation' | 'no_injection' | 'concrete_parameter';
+    code: string;
+    className: string;
+}
+
+interface DIPResult {
+    className: string;
+    startLine: number;
+    constructorInstantiations: number;
+    methodInstantiations: number;
+    injectedDependencies: number;
+    totalDependencies: number;
+    dii: number;
+    dipScore: number;
+    violations: DIPViolation[];
+    suggestion: string;
+}
+
 interface SemgrepResult {
     results: SemgrepFinding[];
     errors: SemgrepError[];
@@ -95,6 +132,12 @@ export function activate(context: vscode.ExtensionContext) {
             if (config.get<boolean>('enableSRP')) {
                 checkSingleResponsibility(editor.document, true);
             }
+            if (config.get<boolean>('enableOCP')) {
+                checkOpenClosed(editor.document, true);
+            }
+            if (config.get<boolean>('enableDIP')) {
+                checkDependencyInversion(editor.document, true);
+            }
         }
     });
 
@@ -115,7 +158,21 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    context.subscriptions.push(scanFileCommand, scanWorkspaceCommand, clearCommand, srpCheckCommand);
+    const ocpCheckCommand = vscode.commands.registerCommand('semgrep-offline.checkOCP', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            checkOpenClosed(editor.document);
+        }
+    });
+
+    const dipCheckCommand = vscode.commands.registerCommand('semgrep-offline.checkDIP', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            checkDependencyInversion(editor.document);
+        }
+    });
+
+    context.subscriptions.push(scanFileCommand, scanWorkspaceCommand, clearCommand, srpCheckCommand, ocpCheckCommand, dipCheckCommand);
 
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument((document) => {
@@ -125,6 +182,12 @@ export function activate(context: vscode.ExtensionContext) {
                 scanFile(document, true);
                 if (config.get<boolean>('enableSRP')) {
                     checkSingleResponsibility(document, true);
+                }
+                if (config.get<boolean>('enableOCP')) {
+                    checkOpenClosed(document, true);
+                }
+                if (config.get<boolean>('enableDIP')) {
+                    checkDependencyInversion(document, true);
                 }
             }
         })
@@ -138,6 +201,12 @@ export function activate(context: vscode.ExtensionContext) {
                 scanFile(document, false);
                 if (config.get<boolean>('enableSRP')) {
                     checkSingleResponsibility(document, true);
+                }
+                if (config.get<boolean>('enableOCP')) {
+                    checkOpenClosed(document, true);
+                }
+                if (config.get<boolean>('enableDIP')) {
+                    checkDependencyInversion(document, true);
                 }
             }
         })
@@ -154,6 +223,12 @@ export function activate(context: vscode.ExtensionContext) {
                     scanFile(document, false);
                     if (config.get<boolean>('enableSRP')) {
                         checkSingleResponsibility(document, true);
+                    }
+                    if (config.get<boolean>('enableOCP')) {
+                        checkOpenClosed(document, true);
+                    }
+                    if (config.get<boolean>('enableDIP')) {
+                        checkDependencyInversion(document, true);
                     }
                 }, debounceDelay);
             }
@@ -182,6 +257,12 @@ export function activate(context: vscode.ExtensionContext) {
                 scanFile(doc, false);
                 if (initialConfig.get<boolean>('enableSRP')) {
                     checkSingleResponsibility(doc, true);
+                }
+                if (initialConfig.get<boolean>('enableOCP')) {
+                    checkOpenClosed(doc, true);
+                }
+                if (initialConfig.get<boolean>('enableDIP')) {
+                    checkDependencyInversion(doc, true);
                 }
             }
         }
@@ -801,6 +882,668 @@ function getSuggestedSuffix(index: number, total: number): string {
     }
     const suffixes = ['Core', 'Manager', 'Handler', 'Service', 'Processor', 'Builder', 'Factory', 'Provider'];
     return suffixes[index % suffixes.length];
+}
+
+async function checkOpenClosed(document: vscode.TextDocument, silent: boolean = false): Promise<void> {
+    const config = vscode.workspace.getConfiguration('semgrepOffline');
+    const threshold = config.get<number>('ocpScoreThreshold') || 4;
+    
+    const text = document.getText();
+    const lines = text.split('\n');
+    const classes = parseClasses(text, document.languageId);
+    
+    if (classes.length === 0) {
+        if (!silent) {
+            vscode.window.showInformationMessage('No classes found in the current file.');
+        }
+        return;
+    }
+    
+    const results: OCPResult[] = [];
+    const diagnostics: vscode.Diagnostic[] = [];
+    
+    for (const classInfo of classes) {
+        for (const method of classInfo.methods) {
+            const methodLines = lines.slice(method.startLine, method.endLine + 1);
+            const methodText = methodLines.join('\n');
+            
+            const violations = detectOCPViolations(methodText, method.startLine, document.languageId);
+            
+            if (violations.length > 0) {
+                const tcd = calculateTCD(violations, methodLines.length);
+                const tfsc = calculateTFSC(violations);
+                const ocpScore = calculateOCPScore(violations);
+                
+                const result: OCPResult = {
+                    className: classInfo.name,
+                    methodName: method.name,
+                    startLine: method.startLine,
+                    tcd,
+                    tfsc,
+                    ocpScore,
+                    violations,
+                    suggestion: generateOCPSuggestion(violations, ocpScore)
+                };
+                
+                results.push(result);
+                
+                if (ocpScore > threshold) {
+                    const range = new vscode.Range(method.startLine, 0, method.startLine, 100);
+                    const prompt = generateOCPPrompt([result], document.uri.fsPath);
+                    
+                    const diagnostic = new vscode.Diagnostic(
+                        range,
+                        `OCP Violation: Method '${method.name}' in class '${classInfo.name}' has OCP Score=${ocpScore.toFixed(1)}. ${result.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
+                        vscode.DiagnosticSeverity.Warning
+                    );
+                    diagnostic.source = 'solid-ocp';
+                    diagnostic.code = 'OCP';
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+    
+    const existingDiagnostics = diagnosticCollection.get(document.uri) || [];
+    const nonOcpDiagnostics = existingDiagnostics.filter(d => d.source !== 'solid-ocp');
+    diagnosticCollection.set(document.uri, [...nonOcpDiagnostics, ...diagnostics]);
+    
+    const violatingMethods = results.filter(r => r.ocpScore > threshold);
+    
+    if (!silent) {
+        if (violatingMethods.length > 0) {
+            const prompt = generateOCPPrompt(violatingMethods, document.uri.fsPath);
+            outputChannel.appendLine('\n=== OCP Analysis Result ===');
+            outputChannel.appendLine(prompt);
+            outputChannel.show();
+            
+            const action = await vscode.window.showWarningMessage(
+                `Found ${violatingMethods.length} method(s) potentially violating Open/Closed Principle.`,
+                'View Details',
+                'Copy Prompt'
+            );
+            
+            if (action === 'Copy Prompt') {
+                await vscode.env.clipboard.writeText(prompt);
+                vscode.window.showInformationMessage('OCP analysis prompt copied to clipboard.');
+            } else if (action === 'View Details') {
+                outputChannel.show();
+            }
+        } else {
+            vscode.window.showInformationMessage('All methods pass the Open/Closed Principle check.');
+        }
+    } else if (violatingMethods.length > 0) {
+        outputChannel.appendLine(`OCP: Found ${violatingMethods.length} violation(s) in ${path.basename(document.uri.fsPath)}`);
+    }
+}
+
+function detectOCPViolations(methodText: string, startLine: number, languageId: string): OCPViolation[] {
+    if (languageId === 'python') {
+        return detectPythonOCPViolations(methodText, startLine);
+    } else if (languageId === 'typescript' || languageId === 'javascript' || languageId === 'typescriptreact' || languageId === 'javascriptreact') {
+        return detectTypeScriptOCPViolations(methodText, startLine);
+    }
+    return [];
+}
+
+function detectPythonOCPViolations(methodText: string, startLine: number): OCPViolation[] {
+    const violations: OCPViolation[] = [];
+    const lines = methodText.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineNumber = startLine + i;
+        
+        const isinstanceMatches = line.matchAll(/isinstance\s*\(\s*\w+\s*,\s*[\w.]+\s*\)/g);
+        for (const match of isinstanceMatches) {
+            violations.push({
+                line: lineNumber,
+                type: 'instanceof',
+                code: match[0]
+            });
+        }
+        
+        const typeEqualityMatches = line.matchAll(/type\s*\(\s*\w+\s*\)\s*[=!]=\s*[\w.]+/g);
+        for (const match of typeEqualityMatches) {
+            violations.push({
+                line: lineNumber,
+                type: 'type_equality',
+                code: match[0]
+            });
+        }
+        
+        const typeFieldMatches = line.matchAll(/\.\s*(type|kind|_type|__type__|category|variant)\s*[=!]=\s*["']?\w+["']?/g);
+        for (const match of typeFieldMatches) {
+            violations.push({
+                line: lineNumber,
+                type: 'type_field',
+                code: match[0]
+            });
+        }
+        
+        const matchCasePattern = /^\s*case\s+["']?\w+["']?\s*:/;
+        if (matchCasePattern.test(line)) {
+            violations.push({
+                line: lineNumber,
+                type: 'type_field',
+                code: line.trim()
+            });
+        }
+    }
+    
+    return violations;
+}
+
+function detectTypeScriptOCPViolations(methodText: string, startLine: number): OCPViolation[] {
+    const violations: OCPViolation[] = [];
+    const lines = methodText.split('\n');
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineNumber = startLine + i;
+        
+        const instanceofMatches = line.matchAll(/\w+\s+instanceof\s+\w+/g);
+        for (const match of instanceofMatches) {
+            violations.push({
+                line: lineNumber,
+                type: 'instanceof',
+                code: match[0]
+            });
+        }
+        
+        const typeofMatches = line.matchAll(/typeof\s+\w+\s*[=!]==?\s*["']\w+["']/g);
+        for (const match of typeofMatches) {
+            if (!line.includes("typeof") || 
+                !(line.includes("'string'") || line.includes('"string"') ||
+                  line.includes("'number'") || line.includes('"number"') ||
+                  line.includes("'boolean'") || line.includes('"boolean"') ||
+                  line.includes("'undefined'") || line.includes('"undefined"'))) {
+                violations.push({
+                    line: lineNumber,
+                    type: 'typeof',
+                    code: match[0]
+                });
+            }
+        }
+        
+        const typeFieldMatches = line.matchAll(/\.\s*(type|kind|_type|__type|category|variant|discriminator)\s*[=!]==?\s*["']?\w+["']?/g);
+        for (const match of typeFieldMatches) {
+            violations.push({
+                line: lineNumber,
+                type: 'type_field',
+                code: match[0]
+            });
+        }
+        
+        const switchCasePattern = /^\s*case\s+["']?\w+["']?\s*:/;
+        if (switchCasePattern.test(line)) {
+            const nearSwitch = methodText.substring(0, methodText.indexOf(line));
+            if (/switch\s*\(\s*\w+\.(type|kind|_type|category|variant|discriminator)\s*\)/i.test(nearSwitch)) {
+                violations.push({
+                    line: lineNumber,
+                    type: 'type_field',
+                    code: line.trim()
+                });
+            }
+        }
+    }
+    
+    return violations;
+}
+
+function calculateTCD(violations: OCPViolation[], totalLines: number): number {
+    const typeChecks = violations.filter(v => v.type === 'instanceof' || v.type === 'type_equality' || v.type === 'typeof').length;
+    return totalLines > 0 ? typeChecks / totalLines : 0;
+}
+
+function calculateTFSC(violations: OCPViolation[]): number {
+    return violations.filter(v => v.type === 'type_field').length;
+}
+
+function calculateOCPScore(violations: OCPViolation[]): number {
+    let score = 0;
+    for (const v of violations) {
+        switch (v.type) {
+            case 'instanceof':
+                score += 2.0;
+                break;
+            case 'type_equality':
+                score += 2.0;
+                break;
+            case 'typeof':
+                score += 1.0;
+                break;
+            case 'type_field':
+                score += 1.5;
+                break;
+        }
+    }
+    return score;
+}
+
+function generateOCPSuggestion(violations: OCPViolation[], ocpScore: number): string {
+    if (ocpScore <= 4) {
+        return 'Minor type-checking detected. Consider if polymorphism would be beneficial.';
+    }
+    
+    const instanceofCount = violations.filter(v => v.type === 'instanceof' || v.type === 'type_equality').length;
+    const typeFieldCount = violations.filter(v => v.type === 'type_field').length;
+    
+    if (instanceofCount > typeFieldCount) {
+        return 'Consider using polymorphism (Strategy/Visitor pattern) instead of instanceof checks.';
+    } else {
+        return 'Consider using polymorphism or discriminated unions instead of type-field switches.';
+    }
+}
+
+function generateOCPPrompt(violations: OCPResult[], filePath: string): string {
+    const fileName = path.basename(filePath);
+    
+    let prompt = `# Open/Closed Principle Violation Analysis\n\n`;
+    prompt += `**File:** ${fileName}\n\n`;
+    prompt += `The following method(s) may violate the Open/Closed Principle:\n\n`;
+    
+    for (const violation of violations) {
+        prompt += `## Class: ${violation.className}, Method: ${violation.methodName}\n`;
+        prompt += `- **OCP Score:** ${violation.ocpScore.toFixed(1)} (threshold exceeded)\n`;
+        prompt += `- **Type-Check Density (TCD):** ${(violation.tcd * 100).toFixed(1)}%\n`;
+        prompt += `- **Type-Field Switch Count (TFSC):** ${violation.tfsc}\n\n`;
+        
+        prompt += `### Detected Violations:\n`;
+        const groupedViolations = new Map<string, OCPViolation[]>();
+        for (const v of violation.violations) {
+            const key = v.type;
+            if (!groupedViolations.has(key)) {
+                groupedViolations.set(key, []);
+            }
+            groupedViolations.get(key)!.push(v);
+        }
+        
+        for (const [type, items] of groupedViolations) {
+            const typeLabel = type === 'instanceof' ? 'isinstance/instanceof checks' :
+                             type === 'type_equality' ? 'type() equality checks' :
+                             type === 'typeof' ? 'typeof checks' : 'type-field conditionals';
+            prompt += `- **${typeLabel}:** ${items.length}\n`;
+            for (const item of items.slice(0, 3)) {
+                prompt += `  - Line ${item.line + 1}: \`${item.code}\`\n`;
+            }
+            if (items.length > 3) {
+                prompt += `  - ... and ${items.length - 3} more\n`;
+            }
+        }
+        
+        prompt += `\n### Recommended Refactoring:\n`;
+        prompt += `${violation.suggestion}\n\n`;
+        prompt += `**Patterns to consider:**\n`;
+        prompt += `1. **Strategy Pattern:** Extract each type-specific behavior into separate strategy classes\n`;
+        prompt += `2. **Polymorphism:** Move behavior into subclasses and use method overriding\n`;
+        prompt += `3. **Visitor Pattern:** If operations vary independently from object structure\n`;
+        prompt += `4. **Factory + Registry:** Register handlers for each type dynamically\n\n`;
+    }
+    
+    prompt += `---\n`;
+    prompt += `**Action Required:** Refactor to eliminate type-checking conditionals. `;
+    prompt += `New types should be addable without modifying existing code.\n`;
+    
+    return prompt;
+}
+
+async function checkDependencyInversion(document: vscode.TextDocument, silent: boolean = false): Promise<void> {
+    const config = vscode.workspace.getConfiguration('semgrepOffline');
+    const threshold = config.get<number>('dipScoreThreshold') || 3;
+    
+    const text = document.getText();
+    const classes = parseClassesWithConstructors(text, document.languageId);
+    
+    if (classes.length === 0) {
+        if (!silent) {
+            vscode.window.showInformationMessage('No classes found in the current file.');
+        }
+        return;
+    }
+    
+    const results: DIPResult[] = [];
+    const diagnostics: vscode.Diagnostic[] = [];
+    
+    for (const classInfo of classes) {
+        const dipResult = analyzeDIP(classInfo, text, document.languageId);
+        
+        if (dipResult.dipScore > 0) {
+            results.push(dipResult);
+            
+            if (dipResult.dipScore >= threshold) {
+                const range = new vscode.Range(classInfo.startLine, 0, classInfo.startLine, 100);
+                const prompt = generateDIPPrompt([dipResult], document.uri.fsPath);
+                
+                const diagnostic = new vscode.Diagnostic(
+                    range,
+                    `DIP Violation: Class '${classInfo.name}' has DIP Score=${dipResult.dipScore.toFixed(1)}, DII=${(dipResult.dii * 100).toFixed(0)}%. ${dipResult.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'solid-dip';
+                diagnostic.code = 'DIP';
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+    
+    const existingDiagnostics = diagnosticCollection.get(document.uri) || [];
+    const nonDipDiagnostics = existingDiagnostics.filter(d => d.source !== 'solid-dip');
+    diagnosticCollection.set(document.uri, [...nonDipDiagnostics, ...diagnostics]);
+    
+    const violatingClasses = results.filter(r => r.dipScore >= threshold);
+    
+    if (!silent) {
+        if (violatingClasses.length > 0) {
+            const prompt = generateDIPPrompt(violatingClasses, document.uri.fsPath);
+            outputChannel.appendLine('\n=== DIP Analysis Result ===');
+            outputChannel.appendLine(prompt);
+            outputChannel.show();
+            
+            const action = await vscode.window.showWarningMessage(
+                `Found ${violatingClasses.length} class(es) potentially violating Dependency Inversion Principle.`,
+                'View Details',
+                'Copy Prompt'
+            );
+            
+            if (action === 'Copy Prompt') {
+                await vscode.env.clipboard.writeText(prompt);
+                vscode.window.showInformationMessage('DIP analysis prompt copied to clipboard.');
+            } else if (action === 'View Details') {
+                outputChannel.show();
+            }
+        } else {
+            vscode.window.showInformationMessage('All classes pass the Dependency Inversion Principle check.');
+        }
+    } else if (violatingClasses.length > 0) {
+        outputChannel.appendLine(`DIP: Found ${violatingClasses.length} violation(s) in ${path.basename(document.uri.fsPath)}`);
+    }
+}
+
+interface ClassWithConstructor extends ClassInfo {
+    constructorStartLine: number;
+    constructorEndLine: number;
+    constructorParams: string[];
+}
+
+function parseClassesWithConstructors(text: string, languageId: string): ClassWithConstructor[] {
+    const baseClasses = parseClasses(text, languageId);
+    const lines = text.split('\n');
+    const result: ClassWithConstructor[] = [];
+    
+    for (const classInfo of baseClasses) {
+        const classWithCtor: ClassWithConstructor = {
+            ...classInfo,
+            constructorStartLine: -1,
+            constructorEndLine: -1,
+            constructorParams: []
+        };
+        
+        if (languageId === 'python') {
+            const initMethod = classInfo.methods.find(m => m.name === '__init__');
+            if (initMethod) {
+                classWithCtor.constructorStartLine = initMethod.startLine;
+                classWithCtor.constructorEndLine = initMethod.endLine;
+                const initLine = lines[initMethod.startLine];
+                const paramMatch = initLine.match(/def\s+__init__\s*\(\s*self\s*,?\s*([^)]*)\)/);
+                if (paramMatch && paramMatch[1]) {
+                    classWithCtor.constructorParams = paramMatch[1].split(',').map(p => p.trim()).filter(p => p.length > 0);
+                }
+            }
+        } else if (languageId === 'typescript' || languageId === 'javascript' || languageId === 'typescriptreact' || languageId === 'javascriptreact') {
+            for (let i = classInfo.startLine; i <= classInfo.endLine; i++) {
+                const line = lines[i];
+                if (/^\s*constructor\s*\(/.test(line)) {
+                    classWithCtor.constructorStartLine = i;
+                    let braceCount = 0;
+                    let foundStart = false;
+                    for (let j = i; j <= classInfo.endLine; j++) {
+                        const ctorLine = lines[j];
+                        for (const char of ctorLine) {
+                            if (char === '{') {
+                                foundStart = true;
+                                braceCount++;
+                            } else if (char === '}') {
+                                braceCount--;
+                            }
+                        }
+                        if (foundStart && braceCount === 0) {
+                            classWithCtor.constructorEndLine = j;
+                            break;
+                        }
+                    }
+                    const ctorMatch = line.match(/constructor\s*\(([^)]*)\)/);
+                    if (ctorMatch && ctorMatch[1]) {
+                        classWithCtor.constructorParams = ctorMatch[1].split(',').map(p => p.trim()).filter(p => p.length > 0);
+                    }
+                    break;
+                }
+            }
+        }
+        
+        result.push(classWithCtor);
+    }
+    
+    return result;
+}
+
+function analyzeDIP(classInfo: ClassWithConstructor, text: string, languageId: string): DIPResult {
+    const violations: DIPViolation[] = [];
+    const lines = text.split('\n');
+    
+    let constructorInstantiations = 0;
+    let methodInstantiations = 0;
+    const instantiatedClasses = new Set<string>();
+    
+    if (languageId === 'python') {
+        if (classInfo.constructorStartLine >= 0) {
+            for (let i = classInfo.constructorStartLine; i <= classInfo.constructorEndLine; i++) {
+                const line = lines[i];
+                const instantiations = detectPythonInstantiations(line);
+                for (const inst of instantiations) {
+                    if (!isExcludedClass(inst, languageId)) {
+                        constructorInstantiations++;
+                        instantiatedClasses.add(inst);
+                        violations.push({
+                            line: i,
+                            type: 'constructor_instantiation',
+                            code: line.trim(),
+                            className: inst
+                        });
+                    }
+                }
+            }
+        }
+        
+        for (const method of classInfo.methods) {
+            if (method.name === '__init__') continue;
+            for (let i = method.startLine; i <= method.endLine; i++) {
+                const line = lines[i];
+                const instantiations = detectPythonInstantiations(line);
+                for (const inst of instantiations) {
+                    if (!isExcludedClass(inst, languageId)) {
+                        methodInstantiations++;
+                        instantiatedClasses.add(inst);
+                        violations.push({
+                            line: i,
+                            type: 'method_instantiation',
+                            code: line.trim(),
+                            className: inst
+                        });
+                    }
+                }
+            }
+        }
+    } else if (languageId === 'typescript' || languageId === 'javascript' || languageId === 'typescriptreact' || languageId === 'javascriptreact') {
+        if (classInfo.constructorStartLine >= 0) {
+            for (let i = classInfo.constructorStartLine; i <= classInfo.constructorEndLine; i++) {
+                const line = lines[i];
+                const instantiations = detectTypeScriptInstantiations(line);
+                for (const inst of instantiations) {
+                    if (!isExcludedClass(inst, languageId)) {
+                        constructorInstantiations++;
+                        instantiatedClasses.add(inst);
+                        violations.push({
+                            line: i,
+                            type: 'constructor_instantiation',
+                            code: line.trim(),
+                            className: inst
+                        });
+                    }
+                }
+            }
+        }
+        
+        for (const method of classInfo.methods) {
+            for (let i = method.startLine; i <= method.endLine; i++) {
+                const line = lines[i];
+                const instantiations = detectTypeScriptInstantiations(line);
+                for (const inst of instantiations) {
+                    if (!isExcludedClass(inst, languageId)) {
+                        methodInstantiations++;
+                        instantiatedClasses.add(inst);
+                        violations.push({
+                            line: i,
+                            type: 'method_instantiation',
+                            code: line.trim(),
+                            className: inst
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    const injectedDependencies = classInfo.constructorParams.length;
+    const totalDependencies = injectedDependencies + instantiatedClasses.size;
+    const dii = totalDependencies > 0 ? injectedDependencies / totalDependencies : 1;
+    
+    const dipScore = (constructorInstantiations * 2.0) + (methodInstantiations * 1.5);
+    
+    return {
+        className: classInfo.name,
+        startLine: classInfo.startLine,
+        constructorInstantiations,
+        methodInstantiations,
+        injectedDependencies,
+        totalDependencies,
+        dii,
+        dipScore,
+        violations,
+        suggestion: generateDIPSuggestion(constructorInstantiations, methodInstantiations, dii)
+    };
+}
+
+function detectPythonInstantiations(line: string): string[] {
+    const results: string[] = [];
+    const pattern = /([A-Z][a-zA-Z0-9_]*)\s*\(/g;
+    let match;
+    while ((match = pattern.exec(line)) !== null) {
+        if (!line.includes(`def ${match[1]}`) && !line.includes(`class ${match[1]}`)) {
+            results.push(match[1]);
+        }
+    }
+    return results;
+}
+
+function detectTypeScriptInstantiations(line: string): string[] {
+    const results: string[] = [];
+    const pattern = /new\s+([A-Z][a-zA-Z0-9_]*)\s*\(/g;
+    let match;
+    while ((match = pattern.exec(line)) !== null) {
+        results.push(match[1]);
+    }
+    return results;
+}
+
+function isExcludedClass(className: string, languageId: string): boolean {
+    const pythonExclusions = ['Exception', 'Error', 'ValueError', 'TypeError', 'RuntimeError', 'KeyError', 'AttributeError', 'IndexError', 'StopIteration', 'Dict', 'List', 'Set', 'Tuple', 'Optional', 'Union', 'Any', 'Callable', 'Type', 'Literal'];
+    const tsExclusions = ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'Array', 'Object', 'Map', 'Set', 'WeakMap', 'WeakSet', 'Promise', 'Date', 'RegExp', 'URL', 'URLSearchParams', 'FormData', 'Headers', 'Request', 'Response', 'Event', 'CustomEvent', 'EventEmitter'];
+    
+    if (languageId === 'python') {
+        return pythonExclusions.includes(className);
+    } else {
+        return tsExclusions.includes(className);
+    }
+}
+
+function generateDIPSuggestion(constructorInst: number, methodInst: number, dii: number): string {
+    if (constructorInst === 0 && methodInst === 0) {
+        return 'Class follows Dependency Inversion Principle.';
+    }
+    
+    const suggestions: string[] = [];
+    
+    if (constructorInst > 0) {
+        suggestions.push(`Inject ${constructorInst} dependency(ies) via constructor parameters instead of instantiating directly`);
+    }
+    
+    if (methodInst > 0) {
+        suggestions.push(`Consider injecting ${methodInst} dependency(ies) or using factory pattern`);
+    }
+    
+    if (dii < 0.5) {
+        suggestions.push('Low DII indicates most dependencies are created internally');
+    }
+    
+    return suggestions.join('. ') + '.';
+}
+
+function generateDIPPrompt(violations: DIPResult[], filePath: string): string {
+    const fileName = path.basename(filePath);
+    
+    let prompt = `# Dependency Inversion Principle Violation Analysis\n\n`;
+    prompt += `**File:** ${fileName}\n\n`;
+    prompt += `The following class(es) may violate the Dependency Inversion Principle:\n\n`;
+    
+    for (const violation of violations) {
+        prompt += `## Class: ${violation.className}\n`;
+        prompt += `- **DIP Score:** ${violation.dipScore.toFixed(1)} (threshold exceeded)\n`;
+        prompt += `- **Dependency Injection Index (DII):** ${(violation.dii * 100).toFixed(0)}% (100% = all injected)\n`;
+        prompt += `- **Constructor Instantiations:** ${violation.constructorInstantiations}\n`;
+        prompt += `- **Method Instantiations:** ${violation.methodInstantiations}\n`;
+        prompt += `- **Injected Dependencies:** ${violation.injectedDependencies}\n\n`;
+        
+        if (violation.violations.length > 0) {
+            prompt += `### Direct Instantiations Found:\n`;
+            const ctorViolations = violation.violations.filter(v => v.type === 'constructor_instantiation');
+            const methodViolations = violation.violations.filter(v => v.type === 'method_instantiation');
+            
+            if (ctorViolations.length > 0) {
+                prompt += `\n**In Constructor:**\n`;
+                for (const v of ctorViolations.slice(0, 5)) {
+                    prompt += `- Line ${v.line + 1}: \`${v.className}\` - \`${v.code}\`\n`;
+                }
+                if (ctorViolations.length > 5) {
+                    prompt += `- ... and ${ctorViolations.length - 5} more\n`;
+                }
+            }
+            
+            if (methodViolations.length > 0) {
+                prompt += `\n**In Methods:**\n`;
+                for (const v of methodViolations.slice(0, 5)) {
+                    prompt += `- Line ${v.line + 1}: \`${v.className}\` - \`${v.code}\`\n`;
+                }
+                if (methodViolations.length > 5) {
+                    prompt += `- ... and ${methodViolations.length - 5} more\n`;
+                }
+            }
+        }
+        
+        prompt += `\n### Recommended Refactoring:\n`;
+        prompt += `${violation.suggestion}\n\n`;
+        prompt += `**Steps to fix:**\n`;
+        prompt += `1. Create abstractions (interfaces/protocols) for each concrete dependency\n`;
+        prompt += `2. Add constructor parameters to receive dependencies\n`;
+        prompt += `3. Have concrete classes implement the abstractions\n`;
+        prompt += `4. Inject dependencies from calling code or use a DI container\n\n`;
+    }
+    
+    prompt += `---\n`;
+    prompt += `**Action Required:** Refactor to inject dependencies instead of creating them internally. `;
+    prompt += `High-level modules should depend on abstractions, not concrete implementations.\n`;
+    
+    return prompt;
 }
 
 export function deactivate() {
