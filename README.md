@@ -18,6 +18,7 @@ A lightweight VSCode/Cursor extension that runs semgrep with local rules only - 
 - **Single Responsibility Principle (SRP)** - Detects classes violating SRP using LCOM4 metric
 - **Open/Closed Principle (OCP)** - Detects type-checking conditionals using TCD+TFSC metrics
 - **Dependency Inversion Principle (DIP)** - Detects direct instantiation using DII metric
+- **Interface Segregation Principle (ISP)** - Detects fat interfaces and stub implementations using IFS+SIR metrics
 - **AI-Ready Prompts** - Generates detailed refactoring prompts for AI agents (Cursor, Copilot, etc.)
 - **Automatic Detection** - Runs alongside semgrep scans when enabled
 
@@ -81,6 +82,14 @@ Reload the editor: `Ctrl+Shift+P` → "Developer: Reload Window"
 | `semgrepOffline.enableDIP` | `false` | Enable DIP check during automatic scans |
 | `semgrepOffline.dipScoreThreshold` | `3` | DIP score threshold (lower = stricter) |
 
+#### Interface Segregation Principle (ISP)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `semgrepOffline.enableISP` | `false` | Enable ISP check during automatic scans |
+| `semgrepOffline.ispFatInterfaceThreshold` | `5` | Fat interface threshold (interfaces with more methods are flagged) |
+| `semgrepOffline.ispSirThreshold` | `0.3` | Stub Implementation Ratio threshold (0.3 = 30%) |
+
 ## Commands
 
 ### Semgrep Commands
@@ -98,6 +107,7 @@ Reload the editor: `Ctrl+Shift+P` → "Developer: Reload Window"
 | `SOLID: Check Single Responsibility Principle (LCOM4)` | Analyze classes for SRP violations |
 | `SOLID: Check Open/Closed Principle (TCD+TFSC)` | Analyze methods for OCP violations |
 | `SOLID: Check Dependency Inversion Principle (DII)` | Analyze classes for DIP violations |
+| `SOLID: Check Interface Segregation Principle (IFS+SIR)` | Analyze interfaces for ISP violations |
 
 ## SOLID Metrics Explained
 
@@ -219,6 +229,89 @@ class OrderService:
 
 ---
 
+### ISP: IFS + SIR (Interface Fatness Score + Stub Implementation Ratio)
+
+Detects "fat interfaces" that force classes to implement methods they don't need.
+
+**Metrics:**
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| **IFS** | Count of abstract methods | Interface Fatness Score - interfaces with IFS > 5 are flagged |
+| **SIR** | `stub_methods / total_methods` | Stub Implementation Ratio - classes with SIR > 30% are flagged |
+
+**What counts as a stub:**
+- `pass` or `...` in Python
+- `raise NotImplementedError`
+- Empty method bodies `{ }` in TypeScript
+- `throw new Error("Not implemented")`
+
+**Example violation:**
+```python
+from abc import ABC, abstractmethod
+
+class Machine(ABC):
+    @abstractmethod
+    def print_document(self): pass
+    
+    @abstractmethod
+    def scan_document(self): pass
+    
+    @abstractmethod
+    def fax_document(self): pass
+    
+    @abstractmethod
+    def staple_document(self): pass
+    
+    @abstractmethod
+    def bind_document(self): pass
+    
+    @abstractmethod
+    def shred_document(self): pass
+
+# IFS = 6 (fat interface!)
+
+class SimplePrinter(Machine):
+    def print_document(self):
+        return "Printing..."
+    
+    def scan_document(self):
+        pass  # Stub - doesn't scan
+    
+    def fax_document(self):
+        pass  # Stub - doesn't fax
+    
+    def staple_document(self):
+        pass  # Stub - doesn't staple
+    
+    def bind_document(self):
+        pass  # Stub - doesn't bind
+    
+    def shred_document(self):
+        pass  # Stub - doesn't shred
+
+# SIR = 5/6 = 83% (forced to implement unused methods!)
+```
+
+**Fixed version:**
+```python
+class Printer(ABC):
+    @abstractmethod
+    def print_document(self): pass
+
+class Scanner(ABC):
+    @abstractmethod
+    def scan_document(self): pass
+
+class SimplePrinter(Printer):
+    def print_document(self):
+        return "Printing..."
+
+# SIR = 0% - only implements what it needs
+```
+
+---
+
 ## Example Configuration
 
 In your project's `.vscode/settings.json`:
@@ -234,7 +327,8 @@ In your project's `.vscode/settings.json`:
     "semgrepOffline.languages": ["python"],
     "semgrepOffline.enableSRP": true,
     "semgrepOffline.enableOCP": true,
-    "semgrepOffline.enableDIP": true
+    "semgrepOffline.enableDIP": true,
+    "semgrepOffline.enableISP": true
 }
 ```
 

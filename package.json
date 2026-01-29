@@ -1,7 +1,7 @@
 {
   "name": "semgrep-offline",
   "displayName": "Semgrep Offline",
-  "description": "Offline semgrep linter with SOLID principle checks (SRP via LCOM4, OCP via TCD+TFSC, DIP via DII)",
+  "description": "Offline semgrep linter with SOLID principle checks (SRP via LCOM4, OCP via TCD+TFSC, DIP via DII, ISP via IFS+SIR)",
   "version": "1.2.0",
   "publisher": "payamnaghdi",
   "license": "MIT",
@@ -44,6 +44,10 @@
       {
         "command": "semgrep-offline.checkDIP",
         "title": "SOLID: Check Dependency Inversion Principle (DII)"
+      },
+      {
+        "command": "semgrep-offline.checkISP",
+        "title": "SOLID: Check Interface Segregation Principle (IFS+SIR)"
       }
     ],
     "configuration": [
@@ -150,6 +154,29 @@
             "default": 3,
             "description": "DIP score threshold. Classes with score >= threshold are flagged. Weights: constructor=2, method=1.5",
             "order": 2
+          }
+        }
+      },
+      {
+        "title": "SOLID: Interface Segregation (ISP)",
+        "properties": {
+          "semgrepOffline.enableISP": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable ISP check during automatic scans",
+            "order": 1
+          },
+          "semgrepOffline.ispFatInterfaceThreshold": {
+            "type": "number",
+            "default": 5,
+            "description": "Fat interface threshold. Interfaces with more abstract methods than this are flagged",
+            "order": 2
+          },
+          "semgrepOffline.ispSirThreshold": {
+            "type": "number",
+            "default": 0.3,
+            "description": "Stub Implementation Ratio threshold. Classes with SIR >= threshold are flagged (0.3 = 30%)",
+            "order": 3
           }
         }
       }

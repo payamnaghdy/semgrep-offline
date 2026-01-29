@@ -63,6 +63,27 @@ interface DIPResult {
     suggestion: string;
 }
 
+interface ISPViolation {
+    line: number;
+    type: 'fat_interface' | 'empty_implementation' | 'not_implemented_error';
+    methodName: string;
+    code: string;
+}
+
+interface ISPResult {
+    className: string;
+    startLine: number;
+    isInterface: boolean;
+    abstractMethodCount: number;
+    emptyImplementations: number;
+    notImplementedErrors: number;
+    ifs: number;
+    sir: number;
+    ispScore: number;
+    violations: ISPViolation[];
+    suggestion: string;
+}
+
 interface SemgrepResult {
     results: SemgrepFinding[];
     errors: SemgrepError[];
@@ -138,6 +159,9 @@ export function activate(context: vscode.ExtensionContext) {
             if (config.get<boolean>('enableDIP')) {
                 checkDependencyInversion(editor.document, true);
             }
+            if (config.get<boolean>('enableISP')) {
+                checkInterfaceSegregation(editor.document, true);
+            }
         }
     });
 
@@ -172,7 +196,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    context.subscriptions.push(scanFileCommand, scanWorkspaceCommand, clearCommand, srpCheckCommand, ocpCheckCommand, dipCheckCommand);
+    const ispCheckCommand = vscode.commands.registerCommand('semgrep-offline.checkISP', () => {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            checkInterfaceSegregation(editor.document);
+        }
+    });
+
+    context.subscriptions.push(scanFileCommand, scanWorkspaceCommand, clearCommand, srpCheckCommand, ocpCheckCommand, dipCheckCommand, ispCheckCommand);
 
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument((document) => {
@@ -188,6 +219,9 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 if (config.get<boolean>('enableDIP')) {
                     checkDependencyInversion(document, true);
+                }
+                if (config.get<boolean>('enableISP')) {
+                    checkInterfaceSegregation(document, true);
                 }
             }
         })
@@ -207,6 +241,9 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 if (config.get<boolean>('enableDIP')) {
                     checkDependencyInversion(document, true);
+                }
+                if (config.get<boolean>('enableISP')) {
+                    checkInterfaceSegregation(document, true);
                 }
             }
         })
@@ -229,6 +266,9 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                     if (config.get<boolean>('enableDIP')) {
                         checkDependencyInversion(document, true);
+                    }
+                    if (config.get<boolean>('enableISP')) {
+                        checkInterfaceSegregation(document, true);
                     }
                 }, debounceDelay);
             }
@@ -263,6 +303,9 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 if (initialConfig.get<boolean>('enableDIP')) {
                     checkDependencyInversion(doc, true);
+                }
+                if (initialConfig.get<boolean>('enableISP')) {
+                    checkInterfaceSegregation(doc, true);
                 }
             }
         }
@@ -1542,6 +1585,537 @@ function generateDIPPrompt(violations: DIPResult[], filePath: string): string {
     prompt += `---\n`;
     prompt += `**Action Required:** Refactor to inject dependencies instead of creating them internally. `;
     prompt += `High-level modules should depend on abstractions, not concrete implementations.\n`;
+    
+    return prompt;
+}
+
+async function checkInterfaceSegregation(document: vscode.TextDocument, silent: boolean = false): Promise<void> {
+    const config = vscode.workspace.getConfiguration('semgrepOffline');
+    const fatInterfaceThreshold = config.get<number>('ispFatInterfaceThreshold') || 5;
+    const sirThreshold = config.get<number>('ispSirThreshold') || 0.3;
+    
+    const text = document.getText();
+    const results: ISPResult[] = [];
+    const diagnostics: vscode.Diagnostic[] = [];
+    
+    const interfaces = parseInterfaces(text, document.languageId);
+    for (const iface of interfaces) {
+        if (iface.abstractMethodCount > fatInterfaceThreshold) {
+            const result: ISPResult = {
+                className: iface.name,
+                startLine: iface.startLine,
+                isInterface: true,
+                abstractMethodCount: iface.abstractMethodCount,
+                emptyImplementations: 0,
+                notImplementedErrors: 0,
+                ifs: iface.abstractMethodCount,
+                sir: 0,
+                ispScore: iface.abstractMethodCount,
+                violations: [{
+                    line: iface.startLine,
+                    type: 'fat_interface',
+                    methodName: '',
+                    code: `Interface has ${iface.abstractMethodCount} abstract methods`
+                }],
+                suggestion: `Consider splitting into ${Math.ceil(iface.abstractMethodCount / 3)} smaller interfaces with ~3 methods each.`
+            };
+            results.push(result);
+            
+            const range = new vscode.Range(iface.startLine, 0, iface.startLine, 100);
+            const prompt = generateISPPrompt([result], document.uri.fsPath);
+            
+            const diagnostic = new vscode.Diagnostic(
+                range,
+                `ISP Violation: Interface '${iface.name}' has ${iface.abstractMethodCount} abstract methods (fat interface). ${result.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
+                vscode.DiagnosticSeverity.Warning
+            );
+            diagnostic.source = 'solid-isp';
+            diagnostic.code = 'ISP-FAT';
+            diagnostics.push(diagnostic);
+        }
+    }
+    
+    const implementations = parseImplementations(text, document.languageId);
+    for (const impl of implementations) {
+        if (impl.emptyMethods.length > 0 || impl.notImplementedMethods.length > 0) {
+            const totalMethods = impl.totalMethods;
+            const stubMethods = impl.emptyMethods.length + impl.notImplementedMethods.length;
+            const sir = totalMethods > 0 ? stubMethods / totalMethods : 0;
+            
+            if (sir >= sirThreshold || stubMethods >= 2) {
+                const violations: ISPViolation[] = [];
+                
+                for (const m of impl.emptyMethods) {
+                    violations.push({
+                        line: m.line,
+                        type: 'empty_implementation',
+                        methodName: m.name,
+                        code: m.code
+                    });
+                }
+                
+                for (const m of impl.notImplementedMethods) {
+                    violations.push({
+                        line: m.line,
+                        type: 'not_implemented_error',
+                        methodName: m.name,
+                        code: m.code
+                    });
+                }
+                
+                const result: ISPResult = {
+                    className: impl.name,
+                    startLine: impl.startLine,
+                    isInterface: false,
+                    abstractMethodCount: 0,
+                    emptyImplementations: impl.emptyMethods.length,
+                    notImplementedErrors: impl.notImplementedMethods.length,
+                    ifs: 0,
+                    sir,
+                    ispScore: stubMethods * 1.5,
+                    violations,
+                    suggestion: generateISPSuggestion(impl.emptyMethods.length, impl.notImplementedMethods.length, sir)
+                };
+                results.push(result);
+                
+                const range = new vscode.Range(impl.startLine, 0, impl.startLine, 100);
+                const prompt = generateISPPrompt([result], document.uri.fsPath);
+                
+                const diagnostic = new vscode.Diagnostic(
+                    range,
+                    `ISP Violation: Class '${impl.name}' has ${stubMethods} stub method(s) (SIR=${(sir * 100).toFixed(0)}%). ${result.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'solid-isp';
+                diagnostic.code = 'ISP-STUB';
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+    
+    const existingDiagnostics = diagnosticCollection.get(document.uri) || [];
+    const nonIspDiagnostics = existingDiagnostics.filter(d => d.source !== 'solid-isp');
+    diagnosticCollection.set(document.uri, [...nonIspDiagnostics, ...diagnostics]);
+    
+    if (!silent) {
+        if (results.length > 0) {
+            const prompt = generateISPPrompt(results, document.uri.fsPath);
+            outputChannel.appendLine('\n=== ISP Analysis Result ===');
+            outputChannel.appendLine(prompt);
+            outputChannel.show();
+            
+            const action = await vscode.window.showWarningMessage(
+                `Found ${results.length} potential Interface Segregation Principle violation(s).`,
+                'View Details',
+                'Copy Prompt'
+            );
+            
+            if (action === 'Copy Prompt') {
+                await vscode.env.clipboard.writeText(prompt);
+                vscode.window.showInformationMessage('ISP analysis prompt copied to clipboard.');
+            } else if (action === 'View Details') {
+                outputChannel.show();
+            }
+        } else {
+            vscode.window.showInformationMessage('All classes pass the Interface Segregation Principle check.');
+        }
+    } else if (results.length > 0) {
+        outputChannel.appendLine(`ISP: Found ${results.length} violation(s) in ${path.basename(document.uri.fsPath)}`);
+    }
+}
+
+interface InterfaceInfo {
+    name: string;
+    startLine: number;
+    abstractMethodCount: number;
+    methods: string[];
+}
+
+interface ImplementationInfo {
+    name: string;
+    startLine: number;
+    totalMethods: number;
+    emptyMethods: { name: string; line: number; code: string }[];
+    notImplementedMethods: { name: string; line: number; code: string }[];
+}
+
+function parseInterfaces(text: string, languageId: string): InterfaceInfo[] {
+    const interfaces: InterfaceInfo[] = [];
+    const lines = text.split('\n');
+    
+    if (languageId === 'python') {
+        let currentInterface: InterfaceInfo | null = null;
+        let classIndent = 0;
+        let isAbcClass = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trimStart();
+            const indent = line.length - trimmed.length;
+            
+            const classMatch = trimmed.match(/^class\s+(\w+)\s*\(([^)]*)\)/);
+            if (classMatch) {
+                if (currentInterface && currentInterface.abstractMethodCount > 0) {
+                    interfaces.push(currentInterface);
+                }
+                
+                const parentClasses = classMatch[2];
+                isAbcClass = /ABC|Protocol/.test(parentClasses);
+                
+                if (isAbcClass) {
+                    currentInterface = {
+                        name: classMatch[1],
+                        startLine: i,
+                        abstractMethodCount: 0,
+                        methods: []
+                    };
+                    classIndent = indent;
+                } else {
+                    currentInterface = null;
+                }
+                continue;
+            }
+            
+            if (currentInterface && indent <= classIndent && trimmed.length > 0 && !classMatch) {
+                if (currentInterface.abstractMethodCount > 0) {
+                    interfaces.push(currentInterface);
+                }
+                currentInterface = null;
+                continue;
+            }
+            
+            if (currentInterface) {
+                if (trimmed.includes('@abstractmethod')) {
+                    const nextLine = lines[i + 1] || '';
+                    const methodMatch = nextLine.trimStart().match(/^def\s+(\w+)/);
+                    if (methodMatch) {
+                        currentInterface.abstractMethodCount++;
+                        currentInterface.methods.push(methodMatch[1]);
+                    }
+                }
+            }
+        }
+        
+        if (currentInterface && currentInterface.abstractMethodCount > 0) {
+            interfaces.push(currentInterface);
+        }
+    } else if (languageId === 'typescript' || languageId === 'typescriptreact') {
+        let braceCount = 0;
+        let currentInterface: InterfaceInfo | null = null;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            
+            const interfaceMatch = trimmed.match(/^(?:export\s+)?interface\s+(\w+)/);
+            if (interfaceMatch && braceCount === 0) {
+                currentInterface = {
+                    name: interfaceMatch[1],
+                    startLine: i,
+                    abstractMethodCount: 0,
+                    methods: []
+                };
+            }
+            
+            const abstractClassMatch = trimmed.match(/^(?:export\s+)?abstract\s+class\s+(\w+)/);
+            if (abstractClassMatch && braceCount === 0) {
+                currentInterface = {
+                    name: abstractClassMatch[1],
+                    startLine: i,
+                    abstractMethodCount: 0,
+                    methods: []
+                };
+            }
+            
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            braceCount += openBraces - closeBraces;
+            
+            if (currentInterface) {
+                const methodMatch = trimmed.match(/^(?:abstract\s+)?(\w+)\s*\([^)]*\)\s*[:{]/);
+                if (methodMatch && !trimmed.startsWith('constructor')) {
+                    currentInterface.abstractMethodCount++;
+                    currentInterface.methods.push(methodMatch[1]);
+                }
+                
+                const propMethodMatch = trimmed.match(/^(\w+)\s*\([^)]*\)\s*:/);
+                if (propMethodMatch) {
+                    currentInterface.abstractMethodCount++;
+                    currentInterface.methods.push(propMethodMatch[1]);
+                }
+                
+                if (braceCount === 0 && closeBraces > 0) {
+                    if (currentInterface.abstractMethodCount > 0) {
+                        interfaces.push(currentInterface);
+                    }
+                    currentInterface = null;
+                }
+            }
+        }
+    }
+    
+    return interfaces;
+}
+
+function parseImplementations(text: string, languageId: string): ImplementationInfo[] {
+    const implementations: ImplementationInfo[] = [];
+    const lines = text.split('\n');
+    
+    if (languageId === 'python') {
+        let currentClass: ImplementationInfo | null = null;
+        let classIndent = 0;
+        let methodIndent = 0;
+        let currentMethodName = '';
+        let currentMethodLine = 0;
+        let methodBody: string[] = [];
+        let inMethod = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trimStart();
+            const indent = line.length - trimmed.length;
+            
+            const classMatch = trimmed.match(/^class\s+(\w+)/);
+            if (classMatch) {
+                if (currentClass && inMethod) {
+                    checkPythonMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+                }
+                if (currentClass) {
+                    implementations.push(currentClass);
+                }
+                
+                currentClass = {
+                    name: classMatch[1],
+                    startLine: i,
+                    totalMethods: 0,
+                    emptyMethods: [],
+                    notImplementedMethods: []
+                };
+                classIndent = indent;
+                inMethod = false;
+                continue;
+            }
+            
+            if (currentClass && indent <= classIndent && trimmed.length > 0 && !classMatch) {
+                if (inMethod) {
+                    checkPythonMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+                }
+                implementations.push(currentClass);
+                currentClass = null;
+                inMethod = false;
+                continue;
+            }
+            
+            if (currentClass) {
+                const methodMatch = trimmed.match(/^def\s+(\w+)\s*\(/);
+                if (methodMatch) {
+                    if (inMethod) {
+                        checkPythonMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+                    }
+                    
+                    currentMethodName = methodMatch[1];
+                    currentMethodLine = i;
+                    methodIndent = indent;
+                    methodBody = [];
+                    inMethod = true;
+                    currentClass.totalMethods++;
+                    continue;
+                }
+                
+                if (inMethod && indent > methodIndent) {
+                    methodBody.push(trimmed);
+                } else if (inMethod && indent <= methodIndent && trimmed.length > 0) {
+                    checkPythonMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+                    inMethod = false;
+                }
+            }
+        }
+        
+        if (currentClass) {
+            if (inMethod) {
+                checkPythonMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+            }
+            implementations.push(currentClass);
+        }
+    } else if (languageId === 'typescript' || languageId === 'javascript' || languageId === 'typescriptreact' || languageId === 'javascriptreact') {
+        let currentClass: ImplementationInfo | null = null;
+        let braceCount = 0;
+        let classStartBrace = 0;
+        let methodStartBrace = 0;
+        let currentMethodName = '';
+        let currentMethodLine = 0;
+        let methodBody: string[] = [];
+        let inMethod = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            
+            const classMatch = trimmed.match(/^(?:export\s+)?class\s+(\w+)/);
+            if (classMatch && braceCount === 0) {
+                if (currentClass) {
+                    implementations.push(currentClass);
+                }
+                currentClass = {
+                    name: classMatch[1],
+                    startLine: i,
+                    totalMethods: 0,
+                    emptyMethods: [],
+                    notImplementedMethods: []
+                };
+                classStartBrace = 0;
+                inMethod = false;
+            }
+            
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            
+            if (currentClass) {
+                if (braceCount === classStartBrace + 1 || (braceCount === 0 && openBraces > 0)) {
+                    const methodMatch = trimmed.match(/^(?:public\s+|private\s+|protected\s+)?(?:async\s+)?(\w+)\s*\(/);
+                    if (methodMatch && !trimmed.startsWith('constructor')) {
+                        if (inMethod) {
+                            checkTSMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+                        }
+                        currentMethodName = methodMatch[1];
+                        currentMethodLine = i;
+                        methodStartBrace = braceCount;
+                        methodBody = [];
+                        inMethod = true;
+                        currentClass.totalMethods++;
+                    }
+                }
+                
+                if (inMethod) {
+                    methodBody.push(trimmed);
+                }
+            }
+            
+            braceCount += openBraces - closeBraces;
+            
+            if (currentClass && inMethod && braceCount <= methodStartBrace && closeBraces > 0) {
+                checkTSMethodBody(currentClass, currentMethodName, currentMethodLine, methodBody);
+                inMethod = false;
+            }
+            
+            if (currentClass && braceCount === 0 && closeBraces > 0) {
+                implementations.push(currentClass);
+                currentClass = null;
+            }
+        }
+    }
+    
+    return implementations;
+}
+
+function checkPythonMethodBody(impl: ImplementationInfo, methodName: string, methodLine: number, body: string[]): void {
+    if (methodName.startsWith('__') && methodName.endsWith('__') && methodName !== '__init__') {
+        return;
+    }
+    
+    const bodyText = body.join('\n').trim();
+    
+    if (bodyText === 'pass' || bodyText === '...' || bodyText === 'pass  ' || body.length === 1 && body[0].trim() === 'pass') {
+        impl.emptyMethods.push({
+            name: methodName,
+            line: methodLine,
+            code: `def ${methodName}(...): pass`
+        });
+        return;
+    }
+    
+    if (bodyText.includes('raise NotImplementedError') || bodyText.includes('raise NotImplemented')) {
+        impl.notImplementedMethods.push({
+            name: methodName,
+            line: methodLine,
+            code: `def ${methodName}(...): raise NotImplementedError`
+        });
+    }
+}
+
+function checkTSMethodBody(impl: ImplementationInfo, methodName: string, methodLine: number, body: string[]): void {
+    const bodyText = body.join(' ').replace(/[{}]/g, '').trim();
+    
+    if (bodyText === '' || bodyText === methodName + '()' || /^\w+\s*\([^)]*\)\s*$/.test(bodyText)) {
+        impl.emptyMethods.push({
+            name: methodName,
+            line: methodLine,
+            code: `${methodName}() { }`
+        });
+        return;
+    }
+    
+    if (bodyText.includes('throw new Error') && (bodyText.includes('not implemented') || bodyText.includes('Not implemented') || bodyText.includes('NotImplemented'))) {
+        impl.notImplementedMethods.push({
+            name: methodName,
+            line: methodLine,
+            code: `${methodName}() { throw new Error(...) }`
+        });
+    }
+}
+
+function generateISPSuggestion(emptyCount: number, notImplCount: number, sir: number): string {
+    const suggestions: string[] = [];
+    
+    if (emptyCount > 0) {
+        suggestions.push(`${emptyCount} empty method(s) indicate unused interface requirements`);
+    }
+    
+    if (notImplCount > 0) {
+        suggestions.push(`${notImplCount} NotImplementedError method(s) indicate forced interface compliance`);
+    }
+    
+    if (sir > 0.5) {
+        suggestions.push('High stub ratio suggests the interface is too broad for this class');
+    }
+    
+    suggestions.push('Consider using smaller, more focused interfaces');
+    
+    return suggestions.join('. ') + '.';
+}
+
+function generateISPPrompt(violations: ISPResult[], filePath: string): string {
+    const fileName = path.basename(filePath);
+    
+    let prompt = `# Interface Segregation Principle Violation Analysis\n\n`;
+    prompt += `**File:** ${fileName}\n\n`;
+    prompt += `The following class(es)/interface(s) may violate the Interface Segregation Principle:\n\n`;
+    
+    for (const violation of violations) {
+        if (violation.isInterface) {
+            prompt += `## Interface: ${violation.className} (Fat Interface)\n`;
+            prompt += `- **Abstract Method Count (IFS):** ${violation.abstractMethodCount}\n`;
+            prompt += `- **Recommended:** Split into smaller interfaces with 3-5 methods each\n\n`;
+        } else {
+            prompt += `## Class: ${violation.className} (Forced Implementation)\n`;
+            prompt += `- **Stub Implementation Ratio (SIR):** ${(violation.sir * 100).toFixed(0)}%\n`;
+            prompt += `- **Empty Implementations:** ${violation.emptyImplementations}\n`;
+            prompt += `- **NotImplementedError Methods:** ${violation.notImplementedErrors}\n\n`;
+        }
+        
+        if (violation.violations.length > 0) {
+            prompt += `### Detected Issues:\n`;
+            for (const v of violation.violations.slice(0, 10)) {
+                const typeLabel = v.type === 'fat_interface' ? 'Fat Interface' :
+                                 v.type === 'empty_implementation' ? 'Empty Method' : 'NotImplementedError';
+                if (v.methodName) {
+                    prompt += `- **${typeLabel}:** \`${v.methodName}\` at line ${v.line + 1}\n`;
+                } else {
+                    prompt += `- **${typeLabel}:** ${v.code}\n`;
+                }
+            }
+            if (violation.violations.length > 10) {
+                prompt += `- ... and ${violation.violations.length - 10} more\n`;
+            }
+        }
+        
+        prompt += `\n### Recommended Refactoring:\n`;
+        prompt += `${violation.suggestion}\n\n`;
+    }
+    
+    prompt += `---\n`;
+    prompt += `**Action Required:** Split large interfaces into smaller, role-specific interfaces. `;
+    prompt += `Classes should only implement interfaces whose methods they actually use.\n`;
     
     return prompt;
 }
