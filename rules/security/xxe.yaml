@@ -1,0 +1,36 @@
+rules:
+  - id: xxe-etree
+    pattern: etree.parse($INPUT)
+    message: "XML parsing may be vulnerable to XXE attacks. Disable external entity processing."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-611"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: xxe-minidom
+    pattern: xml.dom.minidom.parse($INPUT)
+    message: "XML parsing may be vulnerable to XXE attacks. Use defusedxml instead."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-611"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: xxe-sax
+    pattern: xml.sax.parse($INPUT, ...)
+    message: "XML parsing may be vulnerable to XXE attacks. Use defusedxml instead."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-611"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: xxe-elementtree-parse
+    pattern: xml.etree.ElementTree.parse($INPUT)
+    message: "XML parsing may be vulnerable to XXE attacks. Use defusedxml instead."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-611"
+      owasp: "A05:2021 - Security Misconfiguration"

@@ -1,0 +1,36 @@
+rules:
+  - id: ssrf-requests
+    patterns:
+      - pattern: requests.get($URL, ...)
+      - pattern: requests.post($URL, ...)
+      - pattern: requests.put($URL, ...)
+      - pattern: requests.delete($URL, ...)
+      - pattern: requests.patch($URL, ...)
+    message: "Ensure URL is validated to prevent SSRF attacks."
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A10:2021 - Server-Side Request Forgery"
+
+  - id: ssrf-urllib
+    patterns:
+      - pattern: urllib.request.urlopen($URL, ...)
+      - pattern: urllib.urlopen($URL, ...)
+    message: "Ensure URL is validated to prevent SSRF attacks."
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe: "CWE-918"
+      owasp: "A10:2021 - Server-Side Request Forgery"
+
+  - id: django-open-redirect
+    patterns:
+      - pattern: HttpResponseRedirect($URL)
+      - pattern: redirect($URL)
+    message: "Potential open redirect. Validate that the redirect URL is to a trusted destination."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2021 - Broken Access Control"

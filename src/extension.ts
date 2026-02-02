@@ -120,6 +120,7 @@ const fileHashCache = new Map<string, string>();
 let semgrepProcess: ChildProcess | null = null;
 let isScanning = false;
 const scanQueue: vscode.TextDocument[] = [];
+let extensionPath: string = '';
 
 function debounce(key: string, fn: () => void, delay: number): void {
     const existingTimer = debounceTimers.get(key);
@@ -138,6 +139,7 @@ function getFileHash(content: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+    extensionPath = context.extensionPath;
     outputChannel = vscode.window.createOutputChannel('Semgrep Offline');
     diagnosticCollection = vscode.languages.createDiagnosticCollection('semgrep-offline');
     
@@ -323,13 +325,35 @@ function shouldScanDocument(document: vscode.TextDocument, supportedLanguages: s
     return supportedLanguages.includes(document.languageId) && document.uri.scheme === 'file';
 }
 
-function getConfig(): { semgrepPath: string; rulesPath: string; useCache: boolean } {
+function getConfig(): { semgrepPath: string; rulesPaths: string[]; useCache: boolean; enableSecurityRules: boolean } {
     const config = vscode.workspace.getConfiguration('semgrepOffline');
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
     
-    let rulesPath = config.get<string>('rulesPath') || 'semgrep_rules.yaml';
-    if (!path.isAbsolute(rulesPath) && workspaceFolder) {
-        rulesPath = path.join(workspaceFolder, rulesPath);
+    const rulesPaths: string[] = [];
+    
+    let userRulesPath = config.get<string>('rulesPath') || 'semgrep_rules.yaml';
+    if (!path.isAbsolute(userRulesPath) && workspaceFolder) {
+        userRulesPath = path.join(workspaceFolder, userRulesPath);
+    }
+    rulesPaths.push(userRulesPath);
+    
+    const enableSecurityRules = config.get<boolean>('enableSecurityRules') ?? false;
+    if (enableSecurityRules && extensionPath) {
+        const securityRulesDir = path.join(extensionPath, 'rules', 'security');
+        const securityRuleFiles = [
+            'injection.yaml',
+            'crypto.yaml',
+            'auth.yaml',
+            'xss.yaml',
+            'deserialization.yaml',
+            'path-traversal.yaml',
+            'ssrf.yaml',
+            'xxe.yaml',
+            'config.yaml'
+        ];
+        for (const ruleFile of securityRuleFiles) {
+            rulesPaths.push(path.join(securityRulesDir, ruleFile));
+        }
     }
     
     let semgrepPath = config.get<string>('semgrepPath') || 'semgrep';
@@ -339,12 +363,12 @@ function getConfig(): { semgrepPath: string; rulesPath: string; useCache: boolea
     
     const useCache = config.get<boolean>('useCache') ?? true;
     
-    return { semgrepPath, rulesPath, useCache };
+    return { semgrepPath, rulesPaths, useCache, enableSecurityRules };
 }
 
 async function scanFile(document: vscode.TextDocument, force: boolean): Promise<void> {
     const filePath = document.uri.fsPath;
-    const { semgrepPath, rulesPath, useCache } = getConfig();
+    const { semgrepPath, rulesPaths, useCache } = getConfig();
     
     if (useCache && !force) {
         const currentHash = getFileHash(document.getText());
@@ -367,7 +391,7 @@ async function scanFile(document: vscode.TextDocument, force: boolean): Promise<
     outputChannel.appendLine(`Scanning: ${filePath}`);
     
     try {
-        const results = await runSemgrep(semgrepPath, rulesPath, filePath);
+        const results = await runSemgrep(semgrepPath, rulesPaths, filePath);
         const semgrepDiagnostics = parseSemgrepResults(results, filePath);
         const existingDiagnostics = diagnosticCollection.get(document.uri) || [];
         const srpDiagnostics = existingDiagnostics.filter(d => d.source === 'solid-srp');
@@ -405,13 +429,13 @@ async function scanWorkspace(): Promise<void> {
         return;
     }
     
-    const { semgrepPath, rulesPath } = getConfig();
+    const { semgrepPath, rulesPaths } = getConfig();
     
     statusBarItem.text = '$(sync~spin) Scanning workspace...';
     outputChannel.appendLine(`Scanning workspace: ${workspaceFolder}`);
     
     try {
-        const results = await runSemgrep(semgrepPath, rulesPath, workspaceFolder);
+        const results = await runSemgrep(semgrepPath, rulesPaths, workspaceFolder);
         
         diagnosticCollection.clear();
         fileHashCache.clear();
@@ -449,10 +473,15 @@ async function scanWorkspace(): Promise<void> {
     }
 }
 
-function runSemgrep(semgrepPath: string, rulesPath: string, targetPath: string): Promise<SemgrepResult> {
+function runSemgrep(semgrepPath: string, rulesPaths: string[], targetPath: string): Promise<SemgrepResult> {
     return new Promise((resolve, reject) => {
-        const args = [
-            '--config', rulesPath,
+        const args: string[] = [];
+        
+        for (const rulesPath of rulesPaths) {
+            args.push('--config', rulesPath);
+        }
+        
+        args.push(
             '--json',
             '--metrics=off',
             '--disable-version-check',
@@ -460,7 +489,7 @@ function runSemgrep(semgrepPath: string, rulesPath: string, targetPath: string):
             '--no-git-ignore',
             '-j', '1',
             targetPath
-        ];
+        );
         
         outputChannel.appendLine(`Running: ${semgrepPath} ${args.join(' ')}`);
         

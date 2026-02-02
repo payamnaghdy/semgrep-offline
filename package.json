@@ -2,7 +2,7 @@
   "name": "semgrep-offline",
   "displayName": "Semgrep Offline",
   "description": "Offline semgrep linter with SOLID principle checks (SRP via LCOM4, OCP via TCD+TFSC, DIP via DII, ISP via IFS+SIR)",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "payamnaghdi",
   "license": "MIT",
   "repository": {
@@ -103,6 +103,24 @@
             "default": true,
             "description": "Skip scanning unchanged files (based on content hash)",
             "order": 8
+          }
+        }
+      },
+      {
+        "title": "Security Rules",
+        "properties": {
+          "semgrepOffline.enableSecurityRules": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable bundled Python and Django security rules (SQL injection, XSS, command injection, etc.)",
+            "order": 1
+          },
+          "semgrepOffline.securityRulesSeverity": {
+            "type": "string",
+            "enum": ["error", "warning", "info"],
+            "default": "warning",
+            "description": "Minimum severity level for security rule findings",
+            "order": 2
           }
         }
       },

@@ -1,0 +1,61 @@
+rules:
+  - id: pickle-load-unsafe
+    patterns:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+      - pattern: cPickle.load(...)
+      - pattern: cPickle.loads(...)
+    message: "Pickle deserialization is unsafe with untrusted data. Use JSON or other safe formats."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+
+  - id: yaml-load-unsafe
+    pattern: yaml.load($DATA)
+    message: "yaml.load() without SafeLoader allows arbitrary code execution. Use yaml.safe_load() instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+
+  - id: yaml-loader-unsafe
+    pattern: yaml.load($DATA, Loader=yaml.Loader)
+    message: "yaml.Loader allows arbitrary code execution. Use yaml.SafeLoader instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+
+  - id: marshal-load-unsafe
+    patterns:
+      - pattern: marshal.load(...)
+      - pattern: marshal.loads(...)
+    message: "marshal module is not secure for untrusted data."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+
+  - id: shelve-unsafe
+    pattern: shelve.open(...)
+    message: "shelve uses pickle internally and is not safe for untrusted data."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+
+  - id: django-pickle-session
+    pattern: |
+      SESSION_SERIALIZER = "django.contrib.sessions.serializers.PickleSerializer"
+    message: "Pickle session serializer is insecure. Use JSONSerializer instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"

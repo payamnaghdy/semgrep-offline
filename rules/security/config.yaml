@@ -1,0 +1,48 @@
+rules:
+  - id: django-debug-true
+    pattern: DEBUG = True
+    message: "Django DEBUG mode is enabled. Ensure this is disabled in production settings."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-215"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: django-allowed-hosts-wildcard
+    pattern: ALLOWED_HOSTS = ["*"]
+    message: "ALLOWED_HOSTS contains wildcard '*'. Restrict to specific domains in production."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-16"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: binding-all-interfaces
+    patterns:
+      - pattern: $APP.run(host="0.0.0.0", ...)
+      - pattern: socket.bind(("0.0.0.0", ...))
+      - pattern: socket.bind(("", ...))
+    message: "Binding to all interfaces (0.0.0.0). Consider restricting to specific interfaces."
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe: "CWE-200"
+      owasp: "A05:2021 - Security Misconfiguration"
+
+  - id: tempfile-insecure
+    pattern: tempfile.mktemp(...)
+    message: "tempfile.mktemp() is insecure due to race conditions. Use tempfile.mkstemp() instead."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-377"
+      owasp: "A01:2021 - Broken Access Control"
+
+  - id: assert-security-check
+    pattern: assert $CONDITION
+    message: "assert statements are disabled with python -O. Don't use for security checks."
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe: "CWE-617"
+      owasp: "A04:2021 - Insecure Design"

@@ -1,0 +1,40 @@
+rules:
+  - id: path-traversal-open
+    patterns:
+      - pattern: open($PATH, ...)
+      - pattern: io.open($PATH, ...)
+    message: "Ensure file path is validated to prevent path traversal attacks."
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021 - Broken Access Control"
+
+  - id: django-path-traversal-send-file
+    patterns:
+      - pattern: send_file($PATH, ...)
+      - pattern-not: send_file("...", ...)
+    message: "Potential path traversal in send_file. Use safe_join for paths."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021 - Broken Access Control"
+
+  - id: unsafe-path-join-request
+    pattern: os.path.join(..., request.$ATTR, ...)
+    message: "User input in path join may allow path traversal."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021 - Broken Access Control"
+
+  - id: django-file-upload
+    pattern: request.FILES[$KEY]
+    message: "File upload detected. Ensure proper validation of file type, size, and content."
+    languages: [python]
+    severity: INFO
+    metadata:
+      cwe: "CWE-434"
+      owasp: "A04:2021 - Insecure Design"

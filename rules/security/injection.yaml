@@ -1,0 +1,89 @@
+rules:
+  - id: sql-injection-format-string
+    patterns:
+      - pattern-either:
+          - pattern: cursor.execute($QUERY % ...)
+          - pattern: cursor.execute($QUERY.format(...))
+          - pattern: cursor.execute(f"...")
+    message: "Potential SQL injection via string formatting. Use parameterized queries instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021 - Injection"
+
+  - id: django-sql-injection-raw
+    patterns:
+      - pattern-either:
+          - pattern: $MODEL.objects.raw($QUERY % ...)
+          - pattern: $MODEL.objects.raw($QUERY.format(...))
+          - pattern: $MODEL.objects.raw(f"...")
+    message: "Potential SQL injection in Django raw query. Use parameterized queries: Model.objects.raw('SELECT * FROM table WHERE id = %s', [param])"
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021 - Injection"
+
+  - id: django-sql-injection-extra
+    patterns:
+      - pattern-either:
+          - pattern: $QUERYSET.extra(where=[... % ...])
+          - pattern: $QUERYSET.extra(where=[...format(...)])
+          - pattern: $QUERYSET.extra(where=[f"..."])
+    message: "Potential SQL injection in QuerySet.extra(). Use parameterized queries or ORM methods instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-89"
+      owasp: "A03:2021 - Injection"
+
+  - id: command-injection-os-system
+    pattern: os.system($CMD)
+    message: "os.system() is vulnerable to command injection. Use subprocess with shell=False instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021 - Injection"
+
+  - id: command-injection-subprocess-shell
+    patterns:
+      - pattern: subprocess.call($CMD, shell=True, ...)
+      - pattern: subprocess.run($CMD, shell=True, ...)
+      - pattern: subprocess.Popen($CMD, shell=True, ...)
+      - pattern: subprocess.check_output($CMD, shell=True, ...)
+      - pattern: subprocess.check_call($CMD, shell=True, ...)
+    message: "subprocess with shell=True is vulnerable to command injection. Use shell=False with list arguments."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-78"
+      owasp: "A03:2021 - Injection"
+
+  - id: code-injection-eval
+    pattern: eval($INPUT)
+    message: "eval() executes arbitrary code. Avoid using eval() with untrusted input."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021 - Injection"
+
+  - id: code-injection-exec
+    pattern: exec($INPUT)
+    message: "exec() executes arbitrary code. Avoid using exec() with untrusted input."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021 - Injection"
+
+  - id: code-injection-compile
+    pattern: compile($INPUT, ...)
+    message: "compile() can execute arbitrary code. Ensure input is trusted."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-95"
+      owasp: "A03:2021 - Injection"

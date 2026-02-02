@@ -1,0 +1,45 @@
+rules:
+  - id: django-xss-mark-safe
+    pattern: mark_safe($INPUT)
+    message: "mark_safe() bypasses Django's HTML escaping. Ensure input is properly sanitized or use format_html() instead."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021 - Injection"
+
+  - id: django-xss-safestring
+    pattern: SafeString($INPUT)
+    message: "SafeString bypasses Django's HTML escaping. Ensure input is properly sanitized."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021 - Injection"
+
+  - id: django-xss-autoescape-off
+    pattern: "{% autoescape off %}"
+    message: "Autoescape is disabled in template. This may lead to XSS vulnerabilities."
+    languages: [generic]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021 - Injection"
+
+  - id: flask-markup-unescaped
+    pattern: flask.Markup($INPUT)
+    message: "flask.Markup bypasses escaping. Ensure input is sanitized."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021 - Injection"
+
+  - id: jinja2-autoescape-disabled
+    pattern: jinja2.Environment(..., autoescape=False, ...)
+    message: "Jinja2 autoescape is disabled. This may lead to XSS vulnerabilities."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-79"
+      owasp: "A03:2021 - Injection"

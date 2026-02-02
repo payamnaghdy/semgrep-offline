@@ -5,6 +5,28 @@ All notable changes to the Semgrep Offline VSCode extension will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-02-02
+
+### Added
+- Bundled Python and Django security rules (54 rules total)
+- Security rules organized by category for easy management:
+  - `injection.yaml` - SQL, command, and code injection (9 rules)
+  - `crypto.yaml` - Weak hashing, hardcoded secrets, weak random (9 rules)
+  - `auth.yaml` - CSRF, JWT, SSL, cookies, mass assignment (8 rules)
+  - `xss.yaml` - Cross-site scripting for Django, Flask, Jinja2 (5 rules)
+  - `deserialization.yaml` - Pickle, YAML, marshal, shelve (6 rules)
+  - `path-traversal.yaml` - File path validation, uploads (4 rules)
+  - `ssrf.yaml` - Server-side request forgery, open redirects (3 rules)
+  - `xxe.yaml` - XML external entity attacks (4 rules)
+  - `config.yaml` - Debug modes, binding, tempfile, assert (6 rules)
+- New setting `semgrepOffline.enableSecurityRules` to toggle bundled security rules
+- New setting `semgrepOffline.securityRulesSeverity` to filter by severity level
+- Support for multiple rule files in semgrep invocation
+
+### Changed
+- Refactored `getConfig()` to return array of rule paths
+- Updated `runSemgrep()` to accept multiple `--config` arguments
+
 ## [1.4.0] - 2026-02-02
 
 ### Added
