@@ -15,10 +15,11 @@ A lightweight VSCode/Cursor extension that runs semgrep with local rules only - 
 - **Full diagnostic integration** - Errors appear in Problems panel with proper severity levels
 
 ### SOLID Principle Checks
-- **Single Responsibility Principle (SRP)** - Detects classes violating SRP using LCOM4 metric
+- **Single Responsibility Principle (SRP)** - Detects classes violating SRP using LCOM4 metric with smart override detection
 - **Open/Closed Principle (OCP)** - Detects type-checking conditionals using TCD+TFSC metrics
 - **Dependency Inversion Principle (DIP)** - Detects direct instantiation using DII metric
 - **Interface Segregation Principle (ISP)** - Detects fat interfaces and stub implementations using IFS+SIR metrics
+- **Smart Override Detection** - Automatically excludes override/stub methods from SRP analysis to prevent false positives
 - **AI-Ready Prompts** - Generates detailed refactoring prompts for AI agents (Cursor, Copilot, etc.)
 - **Automatic Detection** - Runs alongside semgrep scans when enabled
 
@@ -126,6 +127,35 @@ LCOM4 measures class cohesion by analyzing how methods are connected through sha
 | 1 | Ideal - all methods are connected (single responsibility) |
 | 2+ | Class may have multiple responsibilities |
 | N | Class likely has N distinct responsibilities |
+
+**Smart Override Detection:**
+
+To prevent false positives in inheritance scenarios, the following methods are automatically excluded from LCOM4 analysis:
+
+| Excluded Method Type | Detection | Reason |
+|---------------------|-----------|--------|
+| Dunder methods | `__name__` pattern | Python special methods |
+| Stub methods | `pass`, `...`, `raise NotImplementedError` | Routed to ISP check instead |
+| Super calls | Contains `super()` | Extending parent behavior, cohesion defined by parent |
+| Pure overrides | No `self.*` attribute usage | Likely overriding parent method without adding state |
+
+This prevents false positives like:
+```python
+class Parent:
+    def x(self): self.data = process()
+    def y(self): return self.data
+    def c(self): self.x(); self.y()  # Connects x and y
+
+class Child(Parent):
+    def x(self):  # Override - excluded from LCOM4
+        return "different behavior"
+    
+    def y(self):  # Override - excluded from LCOM4
+        return "different behavior"
+
+# Without override detection: LCOM4 = 2 (false positive!)
+# With override detection: LCOM4 = 1 (correctly passes)
+```
 
 **Example violation:**
 ```python

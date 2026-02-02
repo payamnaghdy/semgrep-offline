@@ -2,7 +2,7 @@
   "name": "semgrep-offline",
   "displayName": "Semgrep Offline",
   "description": "Offline semgrep linter with SOLID principle checks (SRP via LCOM4, OCP via TCD+TFSC, DIP via DII, ISP via IFS+SIR)",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "payamnaghdi",
   "license": "MIT",
   "repository": {

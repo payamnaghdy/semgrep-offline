@@ -17,6 +17,9 @@ interface MethodInfo {
     endLine: number;
     usedVariables: Set<string>;
     calledMethods: Set<string>;
+    callsSuper: boolean;
+    isStub: boolean;
+    stubType: 'none' | 'pass' | 'not_implemented';
 }
 
 interface LCOM4Result {
@@ -24,6 +27,8 @@ interface LCOM4Result {
     lcom4Value: number;
     connectedComponents: string[][];
     suggestion: string;
+    excludedMethods: string[];
+    excludeReasons: Record<string, string>;
 }
 
 interface OCPViolation {
@@ -577,9 +582,13 @@ async function checkSingleResponsibility(document: vscode.TextDocument, silent: 
             
             const prompt = generateSRPPrompt([lcom4Result], document.uri.fsPath);
             
+            const excludedInfo = lcom4Result.excludedMethods.length > 0 
+                ? ` (${lcom4Result.excludedMethods.length} override/stub methods excluded)` 
+                : '';
+            
             const diagnostic = new vscode.Diagnostic(
                 range,
-                `SRP Violation: Class '${classInfo.name}' has LCOM4=${lcom4Result.lcom4Value}. ${lcom4Result.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
+                `SRP Violation: Class '${classInfo.name}' has LCOM4=${lcom4Result.lcom4Value}${excludedInfo}. ${lcom4Result.suggestion}\n\n--- Agent Prompt ---\n${prompt}`,
                 vscode.DiagnosticSeverity.Warning
             );
             diagnostic.source = 'solid-srp';
@@ -640,6 +649,23 @@ function parsePythonClasses(lines: string[]): ClassInfo[] {
     let currentMethod: MethodInfo | null = null;
     let classIndent = 0;
     let methodIndent = 0;
+    let methodBodyLines: string[] = [];
+    
+    function finalizeMethod(method: MethodInfo, bodyLines: string[]): void {
+        const bodyText = bodyLines.join('\n').trim();
+        
+        if (/super\s*\(\s*\)/.test(bodyText)) {
+            method.callsSuper = true;
+        }
+        
+        if (bodyText === 'pass' || bodyText === '...' || (bodyLines.length === 1 && bodyLines[0].trim() === 'pass')) {
+            method.isStub = true;
+            method.stubType = 'pass';
+        } else if (bodyText.includes('raise NotImplementedError') || bodyText.includes('raise NotImplemented')) {
+            method.isStub = true;
+            method.stubType = 'not_implemented';
+        }
+    }
     
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -650,6 +676,7 @@ function parsePythonClasses(lines: string[]): ClassInfo[] {
         if (classMatch) {
             if (currentClass) {
                 if (currentMethod) {
+                    finalizeMethod(currentMethod, methodBodyLines);
                     currentClass.methods.push(currentMethod);
                 }
                 currentClass.endLine = i - 1;
@@ -663,18 +690,21 @@ function parsePythonClasses(lines: string[]): ClassInfo[] {
                 instanceVariables: new Set()
             };
             currentMethod = null;
+            methodBodyLines = [];
             classIndent = indent;
             continue;
         }
         
         if (currentClass && indent <= classIndent && trimmed.length > 0 && !classMatch) {
             if (currentMethod) {
+                finalizeMethod(currentMethod, methodBodyLines);
                 currentClass.methods.push(currentMethod);
             }
             currentClass.endLine = i - 1;
             classes.push(currentClass);
             currentClass = null;
             currentMethod = null;
+            methodBodyLines = [];
             continue;
         }
         
@@ -682,6 +712,7 @@ function parsePythonClasses(lines: string[]): ClassInfo[] {
             const methodMatch = trimmed.match(/^def\s+(\w+)\s*\(/);
             if (methodMatch) {
                 if (currentMethod) {
+                    finalizeMethod(currentMethod, methodBodyLines);
                     currentClass.methods.push(currentMethod);
                 }
                 currentMethod = {
@@ -689,14 +720,19 @@ function parsePythonClasses(lines: string[]): ClassInfo[] {
                     startLine: i,
                     endLine: i,
                     usedVariables: new Set(),
-                    calledMethods: new Set()
+                    calledMethods: new Set(),
+                    callsSuper: false,
+                    isStub: false,
+                    stubType: 'none'
                 };
+                methodBodyLines = [];
                 methodIndent = indent;
                 continue;
             }
             
             if (currentMethod && indent > methodIndent) {
                 currentMethod.endLine = i;
+                methodBodyLines.push(trimmed);
                 
                 const selfVarMatches = line.matchAll(/self\.(\w+)/g);
                 for (const match of selfVarMatches) {
@@ -716,6 +752,7 @@ function parsePythonClasses(lines: string[]): ClassInfo[] {
     
     if (currentClass) {
         if (currentMethod) {
+            finalizeMethod(currentMethod, methodBodyLines);
             currentClass.methods.push(currentMethod);
         }
         currentClass.endLine = lines.length - 1;
@@ -732,6 +769,25 @@ function parseTypeScriptClasses(lines: string[]): ClassInfo[] {
     let braceCount = 0;
     let classStartBrace = 0;
     let methodStartBrace = 0;
+    let methodBodyLines: string[] = [];
+    
+    function finalizeMethod(method: MethodInfo, bodyLines: string[]): void {
+        const bodyText = bodyLines.join(' ').trim();
+        
+        if (/super\./.test(bodyText)) {
+            method.callsSuper = true;
+        }
+        
+        const bodyWithoutBraces = bodyText.replace(/[{}]/g, '').trim();
+        if (bodyWithoutBraces === '' || /^\w+\s*\([^)]*\)\s*$/.test(bodyWithoutBraces)) {
+            method.isStub = true;
+            method.stubType = 'pass';
+        } else if (bodyText.includes('throw new Error') && 
+                   (bodyText.toLowerCase().includes('not implemented') || bodyText.includes('NotImplemented'))) {
+            method.isStub = true;
+            method.stubType = 'not_implemented';
+        }
+    }
     
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -757,6 +813,7 @@ function parseTypeScriptClasses(lines: string[]): ClassInfo[] {
             const methodMatch = trimmed.match(/^(?:public\s+|private\s+|protected\s+)?(?:async\s+)?(\w+)\s*\(/);
             if (methodMatch && !trimmed.startsWith('constructor') && braceCount === classStartBrace + 1) {
                 if (currentMethod) {
+                    finalizeMethod(currentMethod, methodBodyLines);
                     currentClass.methods.push(currentMethod);
                 }
                 currentMethod = {
@@ -764,13 +821,18 @@ function parseTypeScriptClasses(lines: string[]): ClassInfo[] {
                     startLine: i,
                     endLine: i,
                     usedVariables: new Set(),
-                    calledMethods: new Set()
+                    calledMethods: new Set(),
+                    callsSuper: false,
+                    isStub: false,
+                    stubType: 'none'
                 };
+                methodBodyLines = [];
                 methodStartBrace = braceCount;
             }
             
             if (currentMethod && braceCount > methodStartBrace) {
                 currentMethod.endLine = i;
+                methodBodyLines.push(trimmed);
                 
                 const thisVarMatches = line.matchAll(/this\.(\w+)/g);
                 for (const match of thisVarMatches) {
@@ -785,8 +847,10 @@ function parseTypeScriptClasses(lines: string[]): ClassInfo[] {
             }
             
             if (currentMethod && braceCount <= methodStartBrace && closeBraces > 0) {
+                finalizeMethod(currentMethod, methodBodyLines);
                 currentClass.methods.push(currentMethod);
                 currentMethod = null;
+                methodBodyLines = [];
             }
             
             if (braceCount === 0 && currentClass) {
@@ -801,14 +865,41 @@ function parseTypeScriptClasses(lines: string[]): ClassInfo[] {
 }
 
 function calculateLCOM4(classInfo: ClassInfo): LCOM4Result {
-    const methods = classInfo.methods.filter(m => !m.name.startsWith('__') || m.name === '__init__');
+    const excludedMethods: string[] = [];
+    const excludeReasons: Record<string, string> = {};
+    
+    const methods = classInfo.methods.filter(m => {
+        if (m.name.startsWith('__')) {
+            excludedMethods.push(m.name);
+            excludeReasons[m.name] = 'dunder method';
+            return false;
+        }
+        if (m.isStub) {
+            excludedMethods.push(m.name);
+            excludeReasons[m.name] = m.stubType === 'pass' ? 'stub (pass)' : 'stub (NotImplementedError)';
+            return false;
+        }
+        if (m.callsSuper) {
+            excludedMethods.push(m.name);
+            excludeReasons[m.name] = 'calls super()';
+            return false;
+        }
+        if (m.usedVariables.size === 0 && m.calledMethods.size === 0) {
+            excludedMethods.push(m.name);
+            excludeReasons[m.name] = 'no instance variable usage (likely override)';
+            return false;
+        }
+        return true;
+    });
     
     if (methods.length <= 1) {
         return {
             className: classInfo.name,
             lcom4Value: 1,
             connectedComponents: [methods.map(m => m.name)],
-            suggestion: 'Class has 0 or 1 method, LCOM4 is trivially 1.'
+            suggestion: 'Class has 0 or 1 analyzed method, LCOM4 is trivially 1.',
+            excludedMethods,
+            excludeReasons
         };
     }
     
@@ -865,7 +956,9 @@ function calculateLCOM4(classInfo: ClassInfo): LCOM4Result {
         className: classInfo.name,
         lcom4Value: components.length,
         connectedComponents: components,
-        suggestion
+        suggestion,
+        excludedMethods,
+        excludeReasons
     };
 }
 
@@ -891,12 +984,26 @@ function generateSRPPrompt(violations: LCOM4Result[], filePath: string): string 
     for (const violation of violations) {
         prompt += `## Class: ${violation.className}\n`;
         prompt += `- **LCOM4 Score:** ${violation.lcom4Value} (ideal is 1)\n`;
-        prompt += `- **Connected Components:** ${violation.lcom4Value}\n\n`;
-        prompt += `### Method Groups (disconnected responsibilities):\n`;
+        prompt += `- **Connected Components:** ${violation.lcom4Value}\n`;
+        
+        if (violation.excludedMethods.length > 0) {
+            prompt += `- **Excluded Methods:** ${violation.excludedMethods.length} (override/stub methods not analyzed)\n`;
+        }
+        
+        prompt += `\n### Method Groups (disconnected responsibilities):\n`;
         
         for (let i = 0; i < violation.connectedComponents.length; i++) {
             const component = violation.connectedComponents[i];
             prompt += `${i + 1}. **Responsibility ${i + 1}:** ${component.join(', ')}\n`;
+        }
+        
+        if (violation.excludedMethods.length > 0) {
+            prompt += `\n### Excluded from Analysis:\n`;
+            prompt += `The following methods were excluded from LCOM4 calculation:\n`;
+            for (const methodName of violation.excludedMethods) {
+                const reason = violation.excludeReasons[methodName] || 'unknown';
+                prompt += `- \`${methodName}\`: ${reason}\n`;
+            }
         }
         
         prompt += `\n### Recommended Refactoring:\n`;
